@@ -3,36 +3,25 @@
 
 #include <boost/chrono.hpp>
 
-namespace naex
-{
+namespace naex {
 
-class Timer
-{
+class Timer {
 private:
-    typedef boost::chrono::high_resolution_clock Clock;
-    typedef Clock::time_point Time;
-    typedef boost::chrono::duration<double> Duration;
-    Time start;
+  typedef boost::chrono::high_resolution_clock Clock;
+  typedef Clock::time_point Time;
+  typedef boost::chrono::duration<double> Duration;
+  Time start;
+
 public:
-    Timer()
-        : start(Clock::now())
-    {}
-    Timer(const Time& s)
-        : start(s)
-    {}
-    Timer(const Timer& s)
-        : start(s.start)
-    {}
-    void reset()
-    {
-        start = Clock::now();
-    }
-    double seconds_elapsed() const
-    {
-        return boost::chrono::duration_cast<Duration>(Clock::now() - start).count();
-    }
+  Timer() : start(Clock::now()) {}
+  Timer(const Time &s) : start(s) {}
+  Timer(const Timer &s) : start(s.start) {}
+  void reset() { start = Clock::now(); }
+  double seconds_elapsed() const {
+    return boost::chrono::duration_cast<Duration>(Clock::now() - start).count();
+  }
 };
 
-}
+} // namespace naex
 
-#endif  // NAEX_TIMER_H
+#endif // NAEX_TIMER_H

@@ -4,21 +4,24 @@
     <version>0.0.1</version>
     <description>Robot navigation and exploration.</description>
     <maintainer email="tpetricek@gmail.com">Tomas Petricek</maintainer>
+    <maintainer email="vlkjan6@fel.cvut.cz">Jan Vlk</maintainer>
     <license>BSD</license>
     <url type="website">https://github.com/tpet/naex</url>
     <author email="tpetricek@gmail.com">Tomas Petricek</author>
-    <buildtool_depend>catkin</buildtool_depend>
-    <depend>geometry_msgs</depend>
-    <depend>libflann-dev</depend>
+
+    <buildtool_depend>ament_cmake</buildtool_depend>
+
     <depend>lz4</depend>
-    <depend>message_runtime</depend>
-    <depend>nav_msgs</depend>
-    <depend>nodelet</depend>
-    <depend>roscpp</depend>
-    <depend>sensor_msgs</depend>
-    <depend>std_msgs</depend>
+    <depend>rclcpp</depend>
     <depend>tf2_ros</depend>
+    <depend>nav_msgs</depend>
+    <depend>std_msgs</depend>
+    <depend>tf2_eigen</depend>
+    <depend>sensor_msgs</depend>
+    <depend>libflann-dev</depend>
+    <depend>geometry_msgs</depend>
+
     <export>
-        <nodelet plugin="${prefix}/naex_nodelets.xml" />
+        <build_type>ament_cmake</build_type>
     </export>
 </package>

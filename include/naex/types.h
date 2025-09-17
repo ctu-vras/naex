@@ -3,15 +3,12 @@
 #define NAEX_TYPES_H
 
 #include <Eigen/Dense>
-#include <flann/flann.hpp>
 #include <memory>
 #include <mutex>
-//#include <naex/buffer.h>
 
-//#define K_NEIGHBORS 32
+// #define K_NEIGHBORS 32
 
-namespace naex
-{
+namespace naex {
 typedef std::mutex Mutex;
 typedef std::recursive_mutex RMutex;
 typedef std::lock_guard<Mutex> Lock;
@@ -20,9 +17,9 @@ typedef std::lock_guard<RMutex> RLock;
 // Basic floating-point and index types
 typedef float Elem;
 typedef Elem Value;
-//typedef uint32_t Index;
+// typedef uint32_t Index;
 typedef int Index;
-//typedef size_t Index;
+// typedef size_t Index;
 
 // Arrays and matrices
 typedef Eigen::Matrix<Value, 2, 1, Eigen::DontAlign> Vec2;
@@ -59,118 +56,107 @@ typedef Index Edge;
 // Edge cost or length
 typedef Elem Cost;
 
-typedef flann::Matrix<Value> FlannMat;
-typedef FlannMat FMat;
-typedef flann::Index<flann::L2_3D<Value>> FlannIndex;
-typedef std::shared_ptr<FlannIndex> FlannIndexPtr;
-typedef std::shared_ptr<const FlannIndex> ConstFlannIndexPtr;
-
-enum Flags
-{
-    // Point was updated including its neighborhood. Otherwise it's queued for
-    // updated.
-    UPDATED     = 1 << 0,
-    // A static point, not dynamic or empty, necessary for being traversable.
-    STATIC      = 1 << 1,
-    // Approximately horizontal orientation based on normal direction,
-    // necessary condition for being traversable.
-    HORIZONTAL  = 1 << 2,
-    // Near another actor.
-    ACTOR       = 1 << 3,
-    // A point at the edge, i.e. a frontier.
-    EDGE        = 1 << 4,
-    // Traversable based on terrain roughness and obstacles in neighborhood.
-    TRAVERSABLE = 1 << 5
+enum Flags {
+  // Point was updated including its neighborhood. Otherwise it's queued for
+  // updated.
+  UPDATED = 1 << 0,
+  // A static point, not dynamic or empty, necessary for being traversable.
+  STATIC = 1 << 1,
+  // Approximately horizontal orientation based on normal direction,
+  // necessary condition for being traversable.
+  HORIZONTAL = 1 << 2,
+  // Near another actor.
+  ACTOR = 1 << 3,
+  // A point at the edge, i.e. a frontier.
+  EDGE = 1 << 4,
+  // Traversable based on terrain roughness and obstacles in neighborhood.
+  TRAVERSABLE = 1 << 5
 };
 
 const Index INVALID_INDEX = std::numeric_limits<Index>::max();
 const Vertex INVALID_VERTEX = std::numeric_limits<Vertex>::max();
 
-class Point
-{
+class Point {
 public:
-    Point()
-    {}
+  Point() {}
 
-    Value position_[3] = {std::numeric_limits<Value>::quiet_NaN(),
-                          std::numeric_limits<Value>::quiet_NaN(),
-                          std::numeric_limits<Value>::quiet_NaN()};
-    // Geometric features
-    // TODO: More compact normal representation? Maybe just for sharing,
-    // impacts on memory is small compared to neighbors.
-    // TODO: Switch to compact (u)int8 types where possible.
-    Value normal_[3] = {std::numeric_limits<Value>::quiet_NaN(),
+  Value position_[3] = {std::numeric_limits<Value>::quiet_NaN(),
                         std::numeric_limits<Value>::quiet_NaN(),
                         std::numeric_limits<Value>::quiet_NaN()};
-//    int8 normal_[3];
-    // Normal scale is common to all points.
-    // Number of points used in normal computation.
-    uint8_t normal_support_{0};
-    // Roughness features (in neighborhood radius).
-    // from ball neighborhood
-    Value ground_diff_std_{std::numeric_limits<Value>::quiet_NaN()};
-    // circle in ground plane
-    Value min_ground_diff_{std::numeric_limits<Value>::quiet_NaN()};
-    Value max_ground_diff_{std::numeric_limits<Value>::quiet_NaN()};
-    Value mean_abs_ground_diff_{std::numeric_limits<Value>::quiet_NaN()};
-    // Viewpoint (for occupancy assessment and measurement distance)
-    Value viewpoint_[3];
-    // Distance (Euclidean + time) to this actor and other actors.
-    Value dist_to_actor_{std::numeric_limits<Value>::quiet_NaN()};
-    Value actor_last_visit_{std::numeric_limits<Value>::quiet_NaN()};
-    Value dist_to_other_actors_{std::numeric_limits<Value>::quiet_NaN()};
-    Value other_actors_last_visit_{std::numeric_limits<Value>::quiet_NaN()};
-//    Value prob_visible_{0};
-    Value coverage_{0};
-    Value self_coverage_{0};
-    // Distance to nearest obstacle (non horizontal point).
-    Value dist_to_obstacle_{std::numeric_limits<Value>::quiet_NaN()};
-    // Point flags accoring to Flags.
-    uint8_t flags_{0};
-    // Number of occurences of empty/occupied state.
-    uint8_t num_empty_{0};
-    uint8_t num_occupied_{0};
-    Value dist_to_plane_{std::numeric_limits<Value>::quiet_NaN()};
-    // Number of obstacle points in clearance cylinder.
-    uint8_t num_obstacle_pts_{0};
-    // Number of obstacles nearby.
-    uint8_t num_obstacle_neighbors_{0};
-    // Edge flag.
-//    uint8_t edge_;
-    // Number of edge points nearby.
-    uint8_t num_edge_neighbors_{0};
-    // Label based on normal direction (normal already needs graph).
-//    uint8_t normal_label_;
-    // Label based on terrain roughness.
-//    uint8_t functional_label_;
-    // Planning costs and rewards
-    Value path_cost_{std::numeric_limits<Value>::quiet_NaN()};
-    Value reward_{std::numeric_limits<Value>::quiet_NaN()};
-    Value relative_cost_{std::numeric_limits<Value>::quiet_NaN()};
+  // Geometric features
+  // TODO: More compact normal representation? Maybe just for sharing,
+  // impacts on memory is small compared to neighbors.
+  // TODO: Switch to compact (u)int8 types where possible.
+  Value normal_[3] = {std::numeric_limits<Value>::quiet_NaN(),
+                      std::numeric_limits<Value>::quiet_NaN(),
+                      std::numeric_limits<Value>::quiet_NaN()};
+  //    int8 normal_[3];
+  // Normal scale is common to all points.
+  // Number of points used in normal computation.
+  uint8_t normal_support_{0};
+  // Roughness features (in neighborhood radius).
+  // from ball neighborhood
+  Value ground_diff_std_{std::numeric_limits<Value>::quiet_NaN()};
+  // circle in ground plane
+  Value min_ground_diff_{std::numeric_limits<Value>::quiet_NaN()};
+  Value max_ground_diff_{std::numeric_limits<Value>::quiet_NaN()};
+  Value mean_abs_ground_diff_{std::numeric_limits<Value>::quiet_NaN()};
+  // Viewpoint (for occupancy assessment and measurement distance)
+  Value viewpoint_[3];
+  // Distance (Euclidean + time) to this actor and other actors.
+  Value dist_to_actor_{std::numeric_limits<Value>::quiet_NaN()};
+  Value actor_last_visit_{std::numeric_limits<Value>::quiet_NaN()};
+  Value dist_to_other_actors_{std::numeric_limits<Value>::quiet_NaN()};
+  Value other_actors_last_visit_{std::numeric_limits<Value>::quiet_NaN()};
+  //    Value prob_visible_{0};
+  Value coverage_{0};
+  Value self_coverage_{0};
+  // Distance to nearest obstacle (non horizontal point).
+  Value dist_to_obstacle_{std::numeric_limits<Value>::quiet_NaN()};
+  // Point flags accoring to Flags.
+  uint8_t flags_{0};
+  // Number of occurences of empty/occupied state.
+  uint8_t num_empty_{0};
+  uint8_t num_occupied_{0};
+  Value dist_to_plane_{std::numeric_limits<Value>::quiet_NaN()};
+  // Number of obstacle points in clearance cylinder.
+  uint8_t num_obstacle_pts_{0};
+  // Number of obstacles nearby.
+  uint8_t num_obstacle_neighbors_{0};
+  // Edge flag.
+  //    uint8_t edge_;
+  // Number of edge points nearby.
+  uint8_t num_edge_neighbors_{0};
+  // Label based on normal direction (normal already needs graph).
+  //    uint8_t normal_label_;
+  // Label based on terrain roughness.
+  //    uint8_t functional_label_;
+  // Planning costs and rewards
+  Value path_cost_{std::numeric_limits<Value>::quiet_NaN()};
+  Value reward_{std::numeric_limits<Value>::quiet_NaN()};
+  Value relative_cost_{std::numeric_limits<Value>::quiet_NaN()};
 };
 
-class Neighborhood
-{
+class Neighborhood {
 public:
-    Neighborhood()
-    {}
+  Neighborhood() {}
 
-    // TODO: Make K_NEIGHBORS a parameter.
-    static const Index K_NEIGHBORS = 48;
-    Value position_[3] = {std::numeric_limits<Value>::quiet_NaN(),
-                          std::numeric_limits<Value>::quiet_NaN(),
-                          std::numeric_limits<Value>::quiet_NaN()};
-    // NN Graph
-    // Number of valid entries in neighbors_ and distances_.
-    Index neighbor_count_{0};
-    Index neighbors_[K_NEIGHBORS] = {0};
-    // Treat zero distance and cost as invalid.
-    Value distances_[K_NEIGHBORS] = {0};
-    Value costs_[K_NEIGHBORS] = {0};
-    // Index state from IndexState enum.
-    // uint8_t index_state_;
+  // TODO: Make K_NEIGHBORS a parameter.
+  static const Index K_NEIGHBORS = 48;
+  Value position_[3] = {std::numeric_limits<Value>::quiet_NaN(),
+                        std::numeric_limits<Value>::quiet_NaN(),
+                        std::numeric_limits<Value>::quiet_NaN()};
+  // NN Graph
+  // Number of valid entries in neighbors_ and distances_.
+  Index neighbor_count_{0};
+  Index neighbors_[K_NEIGHBORS] = {0};
+  // Treat zero distance and cost as invalid.
+  Value distances_[K_NEIGHBORS] = {0};
+  Value costs_[K_NEIGHBORS] = {0};
+  // Index state from IndexState enum.
+  // uint8_t index_state_;
 };
 
-}  // namespace naex
+} // namespace naex
 
-#endif  // NAEX_TYPES_H
+#endif // NAEX_TYPES_H
