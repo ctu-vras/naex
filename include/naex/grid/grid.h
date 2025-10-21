@@ -168,6 +168,11 @@ public:
 
   bool empty() const { return id_to_costs_.empty(); }
   size_t size() const { return id_to_costs_.size(); }
+  void clear() {
+    id_to_costs_.clear();
+    id_to_cell_.clear();
+    cell_to_id_.clear();
+  }
 
 protected:
   float cell_size_;

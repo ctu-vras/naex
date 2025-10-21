@@ -3,14 +3,15 @@
 #include "naex/clouds.h"
 #include "naex/grid/graph.h"
 #include "naex/grid/grid.h"
-#include "naex/grid/search.h"
 #include "naex/iterators.h"
+#include "naex/grid/search.h"
 #include "naex/timer.h"
 #include "naex/transforms.h"
 #include "naex/types.h"
 #include <functional>
 #include <geometry_msgs/msg/pose_stamped.hpp>
 #include <geometry_msgs/msg/transform_stamped.hpp>
+#include <nav2_msgs/srv/clear_entire_costmap.hpp>
 #include <nav_msgs/msg/path.hpp>
 #include <nav_msgs/srv/get_plan.hpp>
 #include <rclcpp/rclcpp.hpp>
@@ -139,6 +140,8 @@ public:
         nh_->declare_parameter<std::string>("position_field", position_field_);
     cost_fields_ = nh_->declare_parameter<std::vector<std::string>>(
         "cost_fields", cost_fields_);
+    which_cloud_ = nh_->declare_parameter<std::vector<long int>>("which_cloud",
+                                                                 which_cloud_);
     cloud_weights_ = nh_->declare_parameter<std::vector<double>>(
         "cloud_weights", cloud_weights_);
     map_frame_ = nh_->declare_parameter<std::string>("map_frame", map_frame_);
@@ -161,8 +164,8 @@ public:
     int queue_size = nh_->declare_parameter<int>("input_queue_size", 2);
     queue_size = std::max(1, queue_size);
 
-    std::vector<float> max_costs;
-    std::vector<float> default_costs;
+    std::vector<float> max_costs(cost_fields_.size());
+    std::vector<float> default_costs(cost_fields_.size());
     for (int i = 0; i < num_input_clouds; ++i) {
       max_costs.push_back(std::numeric_limits<float>::quiet_NaN());
       default_costs.push_back(1.f);
@@ -181,6 +184,20 @@ public:
     goal_reached_dist_ =
         nh_->declare_parameter<float>("goal_reached_dist", goal_reached_dist_);
     mode_ = nh_->declare_parameter<int>("mode", mode_);
+
+    // Ad-hoc cost parameters
+    adhoc_costs_ = nh_->declare_parameter("adhoc_costs", adhoc_costs_);
+    adhoc_layer_ = nh_->declare_parameter("adhoc_layer", adhoc_layer_);
+
+    // Sidelobes strategy parameters
+    sidelobes_offset_distance_ = nh_->declare_parameter(
+        "sidelobes_offset_distance", sidelobes_offset_distance_);
+    sidelobes_radius_ = nh_->declare_parameter(
+        "sidelobes_radius", sidelobes_radius_);
+    sidelobes_cost_ = nh_->declare_parameter(
+        "sidelobes_cost", sidelobes_cost_);
+    sidelobes_angle_offsets_ = nh_->declare_parameter(
+        "sidelobes_angle_offsets", sidelobes_angle_offsets_);
 
     tf_ = std::make_shared<tf2_ros::Buffer>(nh_->get_clock());
     tf_sub_ = std::make_shared<tf2_ros::TransformListener>(*tf_);
@@ -227,6 +244,11 @@ public:
     get_plan_service_ = nh_->create_service<nav_msgs::srv::GetPlan>(
         "get_plan", std::bind(&Planner::requestPlan, this,
                               std::placeholders::_1, std::placeholders::_2));
+    clear_map_service_ =
+        nh_->create_service<nav2_msgs::srv::ClearEntireCostmap>(
+            "clear_plan_map",
+            std::bind(&Planner::clearMap, this, std::placeholders::_1,
+                      std::placeholders::_2));
 
     RCLCPP_INFO(nh_->get_logger(), "Node initialized.");
   }
@@ -326,6 +348,22 @@ public:
     RCLCPP_INFO(nh_->get_logger(),
                 "Closest traversable point to start: %s (%.3f).",
                 format(toVec3(grid_.point(v0))).c_str(), best_dist);
+
+    // Apply ad-hoc costs if enabled
+    if (!adhoc_costs_.empty()) {
+      Timer t_adhoc;
+      clearAdHocLayer();
+      
+      // Extract robot yaw from start pose orientation
+      auto &q = start.pose.orientation;
+      float robot_yaw = atan2(2.0f * (q.w * q.z + q.x * q.y),
+                              1.0f - 2.0f * (q.y * q.y + q.z * q.z));
+      
+      applyAdHocCosts(p0, robot_yaw);
+      RCLCPP_DEBUG(nh_->get_logger(),
+                   "Applied ad-hoc costs at robot position %s, yaw %.3f rad: %.3f s.",
+                   format(p0).c_str(), robot_yaw, t_adhoc.seconds_elapsed());
+    }
 
     ShortestPaths sp(grid_, v0, neighborhood_, max_costs_);
     RCLCPP_INFO(nh_->get_logger(), "Dijkstra (%lu pts): %.3f s.", grid_.size(),
@@ -428,6 +466,53 @@ public:
     return planSafe(req, res);
   }
 
+  void clearMap(nav2_msgs::srv::ClearEntireCostmap::Request::SharedPtr req,
+                nav2_msgs::srv::ClearEntireCostmap::Response::SharedPtr res) {
+    grid_.clear();
+    RCLCPP_WARN(nh_->get_logger(), "Map cleared.");
+  }
+
+  void clearAdHocLayer() {
+    if (adhoc_layer_ < 0 || adhoc_layer_ >= 4) {
+      return;
+    }
+    Cost default_cost = default_costs_[adhoc_layer_];
+    for (VertexId v = 0; v < grid_.size(); ++v) {
+      grid_.costs(v)[adhoc_layer_] = default_cost;
+    }
+  }
+
+  void applySidelobesCosts(const Vec3 &robot_pos, float robot_yaw) {
+    if (adhoc_layer_ < 0 || adhoc_layer_ >= 4) {
+      return;
+    }
+
+    for (const auto &angle_offset : sidelobes_angle_offsets_) {
+      float angle_rad = angle_offset * M_PI / 180.0f;
+      Vec3 center(
+          robot_pos.x() + sidelobes_offset_distance_ * cos(robot_yaw + angle_rad),
+          robot_pos.y() + sidelobes_offset_distance_ * sin(robot_yaw + angle_rad),
+          0.0f);
+      
+      for (VertexId v = 0; v < grid_.size(); ++v) {
+        Vec3 cell_pos = toVec3(grid_.point(v));
+        float dist = (cell_pos - center).norm();
+        
+        if (dist <= sidelobes_radius_) {
+          grid_.costs(v)[adhoc_layer_] = sidelobes_cost_;
+        }
+      }
+    }
+  }
+
+  void applyAdHocCosts(const Vec3 &robot_pos, float robot_yaw) {
+    for (const auto &strategy : adhoc_costs_) {
+      if (strategy == "sidelobes") {
+        applySidelobesCosts(robot_pos, robot_yaw);
+      }
+    }
+  }
+
   void planningTimer() {
     RCLCPP_INFO(nh_->get_logger(), "Planning timer callback.");
     Timer t;
@@ -460,18 +545,33 @@ public:
         rclcpp::Duration::from_seconds(tf_timeout_));
 
     Eigen::Isometry3f transform(tf2::transformToEigen(cloud_to_map.transform));
-
-    const uint8_t level = i < cloud_levels_.size() ? cloud_levels_[i] : i;
-    const float weight = i < cloud_weights_.size() ? cloud_weights_[i] : 1.0;
-    const std::string cost_field =
-        i < cost_fields_.size() ? cost_fields_[i] : "cost";
     sensor_msgs::PointCloud2ConstIterator<float> x_it(*input, position_field_);
-    sensor_msgs::PointCloud2ConstIterator<float> cost_it(*input, cost_field);
 
-    for (int i = 0; i < input->height * input->width; ++i, ++x_it, ++cost_it) {
+    std::vector<uint8_t> levels;
+    std::vector<uint8_t> weights;
+    std::vector<sensor_msgs::PointCloud2ConstIterator<float>> cost_iters;
+
+    for (int j = 0; j < cost_fields_.size(); ++j) {
+      if (which_cloud_[j] == i) {
+        levels.push_back(j < cloud_levels_.size() ? cloud_levels_[j] : j);
+        weights.push_back(j < cloud_weights_.size() ? cloud_weights_[j] : 1.0);
+        const std::string cost_field =
+            j < cost_fields_.size() ? cost_fields_[j] : "cost";
+        cost_iters.push_back(
+            sensor_msgs::PointCloud2ConstIterator<float>(*input, cost_field));
+      }
+    }
+
+    for (int i = 0; i < input->height * input->width; ++i, ++x_it) {
       Vec3 p(x_it[0], x_it[1], x_it[2]);
       p = transform * p;
-      grid_.updatePointCost({p.x(), p.y()}, level, weight * cost_it[0]);
+      for (int j = 0; j < levels.size(); ++j) {
+        if (std::isfinite(cost_iters[j][0])) {
+          grid_.updatePointCost({p.x(), p.y()}, levels[j],
+                                weights[j] * cost_iters[j][0]);
+        }
+        ++cost_iters[j];
+      }
     }
   }
 
@@ -519,10 +619,13 @@ protected:
   // Services
   rclcpp::Service<nav_msgs::srv::GetPlan>::SharedPtr get_plan_service_;
   nav_msgs::srv::GetPlan::Request::SharedPtr last_request_;
+  rclcpp::Service<nav2_msgs::srv::ClearEntireCostmap>::SharedPtr
+      clear_map_service_;
 
   // Input
   std::string position_field_{"x"};
   std::vector<std::string> cost_fields_;
+  std::vector<long int> which_cloud_;
   std::vector<double> cloud_weights_;
   std::vector<int> cloud_levels_;
   float max_cloud_age_{5.0};
@@ -543,6 +646,16 @@ protected:
   bool stop_on_goal_{true};
   float goal_reached_dist_{std::numeric_limits<float>::quiet_NaN()};
   int mode_{2};
+
+  // Ad-hoc costs
+  std::vector<std::string> adhoc_costs_{};
+  int adhoc_layer_{3};
+
+  // Sidelobes strategy
+  float sidelobes_offset_distance_{1.0f};
+  float sidelobes_radius_{0.5f};
+  float sidelobes_cost_{10.0f};
+  std::vector<double> sidelobes_angle_offsets_{-90.0f, -90.0f};
 };
 
 } // namespace grid
