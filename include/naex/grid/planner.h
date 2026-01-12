@@ -403,6 +403,9 @@ public:
       res->plan.header.stamp = nh_->get_clock()->now();
       res->plan.poses.push_back(start);
       appendPath(path_vertices, grid_, res->plan);
+      // helhest 01/2026: add the actual goal point to the end of the path for goal checker down the path
+      res->plan.poses.push_back(req->goal);
+
       RCLCPP_INFO(nh_->get_logger(),
                   "Path with %lu poses toward goal %s planned (%.3f s).",
                   res->plan.poses.size(), format(p1).c_str(),
