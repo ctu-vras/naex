@@ -41,8 +41,8 @@ def generate_launch_description():
                         "goal_reached_dist": 0.5,
                         "mode": 2,
                         # Ad-hoc cost parameters; uncomment to enable
-                        #"adhoc_costs": ["sidelobes"],
-                        "adhoc_costs": ["nothing"],
+                        "adhoc_costs": ["sidelobes"],
+                        #"adhoc_costs": ["nothing"],
                         "adhoc_layer": 3,
                         # Sidelobes strategy parameters
                         "sidelobes_offset_distance": 1.0,
