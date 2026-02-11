@@ -189,6 +189,21 @@ public:
     std::vector<double> cost_thresholds(cost_fields_.size(), -1);
     cost_thresholds_ = nh_->declare_parameter<std::vector<double>>("cost_thresholds", cost_thresholds);
 
+    // We want to change 'cost_thresholds' as a recovery.
+    param_subscriber_ = std::make_shared<rclcpp::ParameterEventHandler>(nh_);
+    auto cb = [this](const rclcpp::Parameter & p) {
+      RCLCPP_INFO(
+        nh_->get_logger(), "cb: Received an update to parameter \"%s\" of type %s:",
+        p.get_name().c_str(),
+        p.get_type_name().c_str());
+      cost_thresholds_ = p.as_double_array();
+      for (double c : cost_thresholds_) {
+        RCLCPP_INFO(nh_->get_logger(), "%f", c);
+      }
+    };
+    cb_handle_ = param_subscriber_->add_parameter_callback("cost_thresholds", cb);
+
+
     // Ad-hoc cost parameters
     adhoc_costs_ = nh_->declare_parameter("adhoc_costs", adhoc_costs_);
     adhoc_layer_ = nh_->declare_parameter("adhoc_layer", adhoc_layer_);
@@ -713,6 +728,9 @@ public:
 protected:
   rclcpp::Node::SharedPtr nh_;
   rclcpp::TimerBase::SharedPtr planning_timer_;
+
+  std::shared_ptr<rclcpp::ParameterEventHandler> param_subscriber_;
+  std::shared_ptr<rclcpp::ParameterCallbackHandle> cb_handle_;
 
   // Transforms and frames
   std::shared_ptr<tf2_ros::Buffer> tf_{};
