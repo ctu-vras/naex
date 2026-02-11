@@ -9,6 +9,7 @@
 #include "naex/transforms.h"
 #include "naex/types.h"
 #include <functional>
+// #include <memory>
 #include <geometry_msgs/msg/pose_stamped.hpp>
 #include <geometry_msgs/msg/transform_stamped.hpp>
 #include <nav2_msgs/srv/clear_entire_costmap.hpp>
@@ -23,6 +24,9 @@
 #include <tf2_ros/buffer.h>
 #include <tf2_ros/transform_listener.h>
 #include <unordered_map>
+// #include <geometry_msgs/msg/point.hpp>
+// #include <tf2/LinearMath/Vector3.h>
+// #include <tf2_geometry_msgs/tf2_geometry_msgs.hpp>
 
 namespace naex {
 namespace grid {
@@ -203,6 +207,11 @@ public:
     };
     cb_handle_ = param_subscriber_->add_parameter_callback("cost_thresholds", cb);
 
+    //Astar
+    use_astar_ = nh_->declare_parameter<bool>("use_astar", use_astar_);
+    astar_max_range_ = nh_->declare_parameter<float>("astar_max_range", astar_max_range_);
+    frontier_min_dist_ = nh_->declare_parameter<float>("frontier_min_dist", frontier_min_dist_);
+    frontier_max_neighbors_ = nh_->declare_parameter<int>("frontier_max_neighbors", frontier_max_neighbors_);
 
     // Ad-hoc cost parameters
     adhoc_costs_ = nh_->declare_parameter("adhoc_costs", adhoc_costs_);
@@ -337,6 +346,56 @@ public:
     RCLCPP_WARN(nh_->get_logger(), "Planning stopped.");
   }
 
+  VertexId getCheapestFrontier(const Graph &graph, const Vec3 &start, const Value min_dist, const int max_neighbors, const ShortestPaths &sp) {
+    VertexId cheapest_frontier{INVALID_VERTEX};
+    Cost cheapest_cost = std::numeric_limits<float>::infinity();
+    for (VertexId v = 0; v < graph.grid().size(); ++v) {
+
+      auto cost = sp.fValue(v);
+      // RCLCPP_WARN(nh_->get_logger(), "fval x: %f, y: %f, c: %f", graph.grid().point(v).x, graph.grid().point(v).y, cost);
+
+      if (!std::isfinite(cost) || cost > 10e9) {
+        // BUG: for some reason sometimes instead of inf the cost is 340282346638528859811704183484516925440.000000
+        // unclear why
+        // RCLCPP_WARN(nh_->get_logger(), "inft x: %f, y: %f, c: %f", graph.grid().point(v).x, graph.grid().point(v).y, cost);
+        continue;
+      }
+
+      // Check distance
+      Value dist = (toVec3(graph.grid().point(v)) - start).norm();
+      if (dist < min_dist) {
+        continue;
+      }
+
+      // Check degree
+      // std::pair<EdgeIter, EdgeIter> out_edges = graph.out_edges(v);
+      int deg = 0;
+      // for (auto edge:out_edges) {
+      typename boost::graph_traits<Graph>::out_edge_iterator ei, ei_end;
+      for(boost::tie(ei, ei_end) = boost::out_edges(v, graph); ei != ei_end; ++ei) {
+        if (boost::source(*ei, graph) != boost::target(*ei, graph)) {
+          deg += 1;
+        }
+      }
+      if (deg <= max_neighbors) {
+        // RCLCPP_WARN(nh_->get_logger(), "x: %f, y: %f, c: %f", graph.grid().point(v).x, graph.grid().point(v).y, cost);
+        // Check if cheapest
+        if (cost < cheapest_cost) {
+          cheapest_cost = cost;
+          cheapest_frontier = v;
+        }
+      } else {
+        continue;
+      }
+    }
+    if (cheapest_frontier != INVALID_VERTEX) {
+      RCLCPP_WARN(nh_->get_logger(), "CHEAPEST FRONTIER: x: %f, y: %f, c: %f", graph.grid().point(cheapest_frontier).x, graph.grid().point(cheapest_frontier).y, cheapest_cost);
+    } else {
+      RCLCPP_WARN(nh_->get_logger(), "No admissible frontier found!");
+    }
+    return cheapest_frontier;
+  }
+
   bool plan(nav_msgs::srv::GetPlan::Request::SharedPtr req,
             nav_msgs::srv::GetPlan::Response::SharedPtr res) {
     Timer t;
@@ -417,79 +476,133 @@ public:
                    format(p0).c_str(), robot_yaw, t_adhoc.seconds_elapsed());
     }
 
-    ShortestPaths sp(grid_, v0, neighborhood_, max_costs_);
-    RCLCPP_INFO(nh_->get_logger(), "Dijkstra (%lu pts): %.3f s.", grid_.size(),
-                t_part.seconds_elapsed());
+    // Point2f goal_point = Point2f(p1.x(), p1.y());
+    VertexId v_goal = grid_.cellId(grid_.pointToCell({p1.x(), p1.y()}));
+
+    if (!isValid(req->goal.pose.position)) {
+      RCLCPP_WARN(nh_->get_logger(), "Goal not valid.");
+      // TODO: Return random path in exploration mode.
+      return false; 
+    }
+
+    ShortestPaths sp(nh_, grid_, v0, v_goal, use_astar_, astar_max_range_, cost_thresholds_, cloud_weights_, neighborhood_, max_costs_);
+    if (use_astar_) {
+      RCLCPP_INFO(nh_->get_logger(), "AStar (%lu pts before filtering): %.3f s.", grid_.size(),
+                  t_part.seconds_elapsed());
+    } else {
+      RCLCPP_INFO(nh_->get_logger(), "Dijkstra (%lu pts before filtering): %.3f s.", grid_.size(),
+                  t_part.seconds_elapsed());
+    }
     createAndPublishMapCloud(sp);
 
     if(publish_occupancy_grid_) {
       createAndPublishMapOccupancyGrid(start.pose);
     }
+
+    // Choose which point we select as the goal
+    VertexId v1 = INVALID_VERTEX;
+
+    if (use_astar_) {
+      bool consider_frontier = false;
+      Value euclidean_dist_to_goal = (toVec3(grid_.point(v0)) - toVec3(grid_.point(v_goal))).norm();
+      if (sp.astar_found_goal()) {
+        // If using astar and the goal point is part of the graph.
+        // In this case calculate the distance of the cheapest path.
+        // If it is not too long compared to the euclidean distance between start and goal
+        // then consider it admissible.
+        // If it is too long, consider the cheapest frontier as a substitute.
+        Value start_to_goal_dist = sp.cheapest_path_euclidean_dist(v0, v_goal);
+        if (start_to_goal_dist > max_relative_dist_to_goal_ * euclidean_dist_to_goal) {
+          consider_frontier = true;
+        } else {
+          v1 = v_goal;
+        }
+      } else if (consider_frontier) {
+        // If found start but the distance is long, so we consider the frontier.
+        // That is if the frontier gets us closer to the goal.
+        auto v_frontier = getCheapestFrontier(sp.graph(), p0, frontier_min_dist_, frontier_max_neighbors_, sp); 
+        Value frontier_to_goal_dist = sp.cheapest_path_euclidean_dist(v0, v_frontier);
+        if (frontier_to_goal_dist < euclidean_dist_to_goal) {
+          v1 = v_frontier;
+        } else {
+          v1 = v_goal;
+        }
+      } else {
+        // If goal unreachable, select the cheapest frontier point as a temporary goal.
+        v1 = getCheapestFrontier(sp.graph(), p0, frontier_min_dist_, frontier_max_neighbors_, sp); 
+      }
+    } else {
+      // If planning for a given goal, return path to the closest reachable
+      // point from the goal.
+      t_part.reset();
       Vec3 p1 = toVec3(req->goal.pose.position);
       p1.z() = 0.f;
-
-      VertexId v1 = INVALID_VERTEX;
+      
       Value best_dist = std::numeric_limits<Cost>::infinity();
       // TODO: Use graph vertex iterator.
       for (VertexId v = 0; v < grid_.size(); ++v) {
         if (!std::isfinite(sp.pathCost(v))) {
           continue;
         }
-
+        
         Value dist = (toVec3(grid_.point(v)) - p1).norm();
         if (dist < best_dist) {
           v1 = v;
           best_dist = dist;
         }
-      }
-      if (v1 == INVALID_VERTEX) {
-        RCLCPP_ERROR(nh_->get_logger(),
-                     "No feasible path towards %s was found (%.6f, %.3f s).",
-                     format(p1).c_str(), t_part.seconds_elapsed(),
-                     t.seconds_elapsed());
-        return false;
-      }
-      auto path_vertices = tracePathVertices(v0, v1, sp.predecessors());
-      res->plan.header.frame_id = map_frame_;
-      res->plan.header.stamp = nh_->get_clock()->now();
-      res->plan.poses.push_back(start);
-      appendPath(path_vertices, grid_, res->plan);
-      // helhest 01/2026: add the actual goal point to the end of the path for goal checker down the path
-      res->plan.poses.push_back(req->goal);
-
-      RCLCPP_INFO(nh_->get_logger(),
-                  "Path with %lu poses toward goal %s planned (%.3f s).",
-                  res->plan.poses.size(), format(p1).c_str(),
-                  t.seconds_elapsed());
-      return true;
+      }  
     }
-    RCLCPP_WARN(nh_->get_logger(), "Goal not valid.");
 
-    // TODO: Return random path in exploration mode.
-    return false;
+    if (v1 == INVALID_VERTEX) {
+      RCLCPP_ERROR(nh_->get_logger(),
+      "No feasible path towards %s was found (%.6f, %.3f s).",
+      format(p1).c_str(), t_part.seconds_elapsed(),
+      t.seconds_elapsed());
+      return false;
+    }
+
+    RCLCPP_WARN(nh_->get_logger(), "GOAL POINT: x: %f, y: %f", graph.grid().point(v1).x, graph.grid().point(v1).y);
+
+    auto path_vertices = tracePathVertices(v0, v1, sp.predecessors());
+    res->plan.header.frame_id = map_frame_;
+    res->plan.header.stamp = nh_->get_clock()->now();
+    res->plan.poses.push_back(start);
+    appendPath(path_vertices, grid_, res->plan);
+    // helhest 01/2026: add the actual goal point to the end of the path for goal checker down the path
+    res->plan.poses.push_back(req->goal);
+
+    RCLCPP_INFO(nh_->get_logger(),
+                "Path with %lu poses toward goal %s planned (%.3f s).",
+                res->plan.poses.size(), format(p1).c_str(),
+                t.seconds_elapsed());
+    return true;
+  
   }
 
   void fillMapCloud(sensor_msgs::msg::PointCloud2 &cloud, const Grid &grid,
-                    const std::vector<Cost> &path_costs) {
+                    const std::vector<Cost> &path_costs, const std::vector<Cost> &f_values) {
     // TODO: Allow sending local map.
     append_field<float>("x", 1, cloud);
     append_field<float>("y", 1, cloud);
     append_field<float>("z", 1, cloud);
     append_field<float>("cost", 1, cloud);
     append_field<float>("path_cost", 1, cloud);
+    append_field<float>("f_value", 1, cloud);
     resize_cloud(cloud, 1, grid_.size());
 
     sensor_msgs::PointCloud2Iterator<float> x_it(cloud, "x");
     sensor_msgs::PointCloud2Iterator<float> cost_it(cloud, "cost");
     sensor_msgs::PointCloud2Iterator<float> path_cost_it(cloud, "path_cost");
+    sensor_msgs::PointCloud2Iterator<float> f_values_it(cloud, "f_value");
     for (VertexId v = 0; v < grid_.size();
-         ++v, ++x_it, ++cost_it, ++path_cost_it) {
+         ++v, ++x_it, ++cost_it, ++path_cost_it, ++f_values_it) {
       const auto p = grid_.point(v);
       x_it[0] = p.x;
       x_it[1] = p.y;
       x_it[2] = 0.f;
       cost_it[0] = grid_.costs(v).total();
       path_cost_it[0] = path_costs[v];
+      f_values_it[0] = f_values[v];
     }
   }
 
@@ -497,21 +610,19 @@ public:
     sensor_msgs::msg::PointCloud2 cloud;
     cloud.header.frame_id = map_frame_;
     cloud.header.stamp = nh_->get_clock()->now();
-    fillMapCloud(cloud, grid_, sp.pathCosts());
+    fillMapCloud(cloud, grid_, sp.pathCosts(), sp.fValues());
     map_pub_->publish(cloud);
   }
   
-  void fillMapOccupancyGrid(nav_msgs::msg::OccupancyGrid &occ_grid, const tf2::Quaternion &q) {
+  void fillMapOccupancyGrid(nav_msgs::msg::OccupancyGrid &occ_grid) {
     occ_grid.data.assign(
         occ_grid.info.width * occ_grid.info.height,
         -1
     );
-
-    auto q_inv = q.inverse(); 
     
     for (VertexId v = 0; v < grid_.size(); ++v) {
       const auto p = grid_.point(v);
-      int data_idx = pointToOccupancyGridCell(p, occ_grid, q_inv);
+      int data_idx = pointToOccupancyGridCell(p, occ_grid);
       if (data_idx==-1) {
         continue;
       }
@@ -525,7 +636,7 @@ public:
     }
   }
 
-  int pointToOccupancyGridCell(const Point2f &p, nav_msgs::msg::OccupancyGrid &occ_grid, const tf2::Quaternion &q_inv) {
+  int pointToOccupancyGridCell(const Point2f &p, nav_msgs::msg::OccupancyGrid &occ_grid) {
     int cell = -1;
     geometry_msgs::msg::Point cell_p;
     cell_p.x = p.x - occ_grid.info.origin.position.x;
@@ -543,8 +654,7 @@ public:
   }
 
   geometry_msgs::msg::Point getOccupancyGridOrigin(const geometry_msgs::msg::Pose &robot_pose,
-                                                    const nav_msgs::msg::OccupancyGrid &occ_grid,
-                                                    const tf2::Quaternion &q) {
+                                                    const nav_msgs::msg::OccupancyGrid &occ_grid) {
     geometry_msgs::msg::Point origin_vec;
 
     origin_vec.x = -(float)(occ_grid.info.width)/2.*occ_grid.info.resolution;
@@ -558,9 +668,6 @@ public:
   }
 
   void createAndPublishMapOccupancyGrid(const geometry_msgs::msg::Pose &start) {
-    tf2::Quaternion q;
-    tf2::fromMsg(start.orientation, q);
-
     nav_msgs::msg::OccupancyGrid occ_grid;
     occ_grid.header.frame_id = map_frame_;
     auto now = nh_->get_clock()->now();
@@ -570,10 +677,10 @@ public:
     occ_grid.info.width = occupancy_grid_w_;
     occ_grid.info.height = occupancy_grid_h_;
     
-    geometry_msgs::msg::Point origin = getOccupancyGridOrigin(start, occ_grid, q);
+    geometry_msgs::msg::Point origin = getOccupancyGridOrigin(start, occ_grid);
     occ_grid.info.origin.position = origin;         // assume the starting pose from the request is the robot's current pose
 
-    fillMapOccupancyGrid(occ_grid, q);
+    fillMapOccupancyGrid(occ_grid);
     occ_grid_pub_->publish(occ_grid);
   }
 
@@ -731,6 +838,13 @@ protected:
 
   std::shared_ptr<rclcpp::ParameterEventHandler> param_subscriber_;
   std::shared_ptr<rclcpp::ParameterCallbackHandle> cb_handle_;
+
+  // Astar
+  bool use_astar_{false};
+  float astar_max_range_{50.};       // m; nodes further away than this are ignored
+  float frontier_min_dist_{3.};    // m; frontiers closer than this are ignored
+  int frontier_max_neighbors_{5};  // max num of neighbors to be considered a frontier 
+  float max_relative_dist_to_goal_{2.0};
 
   // Transforms and frames
   std::shared_ptr<tf2_ros::Buffer> tf_{};

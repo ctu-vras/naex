@@ -3,7 +3,9 @@
 #include "naex/grid/grid.h"
 #include "naex/iterators.h"
 #include <boost/graph/graph_traits.hpp>
+#include <boost/graph/properties.hpp>
 #include <boost/property_map/property_map.hpp>
+#include <vector>
 
 namespace naex {
 namespace grid {
@@ -165,6 +167,8 @@ public:
     return cost;
   }
 
+  const Grid& grid() const { return grid_; }
+
 protected:
   const Grid &grid_;
   const uint8_t neighborhood_;
@@ -193,13 +197,17 @@ template <> struct graph_traits<Graph> {
   typedef EdgeId edges_size_type;
 
   typedef directed_tag directed_category;
-  // typedef undirected_tag directed_category;
-  // typedef allow_parallel_edge_tag edge_parallel_category;
   typedef disallow_parallel_edge_tag edge_parallel_category;
 
-  typedef bidirectional_traversal_tag traversal_category;
+  // A* requires incidence_graph_tag
+  typedef incidence_graph_tag traversal_category;
+  // typedef bidirectional_traversal_tag traversal_category;
   typedef VertexIter vertex_iterator;
   typedef EdgeIter out_edge_iterator;
+  typedef EdgeIter in_edge_iterator;
+  typedef EdgeIter edge_iterator;
+
+  typedef EdgeId degree_size_type;
 };
 
 inline std::pair<VertexIter, VertexIter> vertices(const Graph &g) {
@@ -214,7 +222,7 @@ inline std::pair<EdgeIter, EdgeIter> out_edges(VertexId u, const Graph &g) {
   return g.out_edges(u);
 }
 
-/*
+
 inline VertexId num_vertices(const Graph& g)
 {
     return g.num_vertices();
@@ -224,12 +232,13 @@ inline EdgeId out_degree(VertexId u, const Graph& g)
 {
     return g.out_degree(u);
 }
-*/
+
 
 template <> class property_traits<naex::grid::EdgeCosts> {
 public:
   typedef EdgeId key_type;
   typedef Cost value_type;
+  typedef Cost reference;
   typedef readable_property_map_tag category;
 };
 

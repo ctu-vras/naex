@@ -12,6 +12,9 @@ def generate_launch_description():
                 output="screen",
                 parameters=[
                     {
+                        "use_astar": False,
+                        "frontier_min_dist": 2.,
+                        "frontier_max_neighbors": 5,
                         "position_field": "x",
                         "map_frame": "gps_odom",
                         "robot_frame": "base_link",
@@ -21,15 +24,25 @@ def generate_launch_description():
                         "forget_factor": 0.1,
                         "cost_fields": ["geometric_cost"],
                         "which_cloud": [0],
+
+                        # Don't forget that cloud_weights are not relative, becuase in the planner they are combined
+                        # with the euclidean length of the edge in meters.
+                        # E.g. if we weight the geometry cloud by 10. and we get a 0.5 geometry cost, it tranlates to 
+                        # a cost of 5. for an edge of the graph of size 1 meter (where the base cost is 1 per 1 meter traveled).
+                        # So we are saying that the path along this edge is equal to finding a different route to the same goal point
+                        # of length 5 meters and with 0 cost.
                         "cloud_weights": [
                             2.0,
                         ],  # BEST RUN WAS WITH [1.0, 2.0, 10.0]
+                        "cost_thresholds": [
+                            0.5,
+                        ],
                         "max_costs": [
                             float("nan"),
                         ],
                         "default_costs": [
-			    0.5
-			],
+                            0.5
+                        ],
                         "neighborhood": 8,
                         "min_path_cost": 1.0,
                         "planning_freq": 1.0,
