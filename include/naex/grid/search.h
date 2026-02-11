@@ -5,6 +5,19 @@
 namespace naex {
 namespace grid {
 
+
+bool is_obstacle(VertexId v, const Grid &grid, const std::vector<double> &cost_thresholds, const std::vector<double> &cloud_weights) {
+  for (int i{0}; i < cost_thresholds.size(); ++i) {
+    Cost c = grid.costs(v).data[i];
+    // RCLCPP_INFO(nh_->get_logger(), "filter_obstacles %u cost being %f with weight %f and threshold %f", filter_obstacles_, c, cloud_weights_[i], cost_thresholds_[i]);
+    if ((c > cloud_weights[i] * cost_thresholds[i])) {
+      // RCLCPP_INFO(nh_->get_logger(), "node thresholded due to level %d cost being %f with weight %f and threshold %f", i, c, cloud_weights_[i], cost_thresholds_[i]);
+      return true;
+    }
+  }
+  return false;
+}
+
 class ShortestPaths {
 public:
   ShortestPaths(const Grid &grid, VertexId start, uint8_t neighborhood = 8,

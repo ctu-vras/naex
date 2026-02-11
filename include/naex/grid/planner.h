@@ -14,6 +14,7 @@
 #include <nav2_msgs/srv/clear_entire_costmap.hpp>
 #include <nav_msgs/msg/path.hpp>
 #include <nav_msgs/srv/get_plan.hpp>
+#include <nav_msgs/msg/occupancy_grid.hpp>
 #include <rclcpp/rclcpp.hpp>
 #include <sensor_msgs/msg/point_cloud2.hpp>
 #include <sensor_msgs/point_cloud2_iterator.hpp>
@@ -185,6 +186,9 @@ public:
         nh_->declare_parameter<float>("goal_reached_dist", goal_reached_dist_);
     mode_ = nh_->declare_parameter<int>("mode", mode_);
 
+    std::vector<double> cost_thresholds(cost_fields_.size(), -1);
+    cost_thresholds_ = nh_->declare_parameter<std::vector<double>>("cost_thresholds", cost_thresholds);
+
     // Ad-hoc cost parameters
     adhoc_costs_ = nh_->declare_parameter("adhoc_costs", adhoc_costs_);
     adhoc_layer_ = nh_->declare_parameter("adhoc_layer", adhoc_layer_);
@@ -199,6 +203,24 @@ public:
     sidelobes_angle_offsets_ = nh_->declare_parameter(
         "sidelobes_angle_offsets", sidelobes_angle_offsets_);
 
+    publish_occupancy_grid_ = nh_->declare_parameter<bool>("publish_occupancy_grid", publish_occupancy_grid_);
+    occupancy_grid_w_ = nh_->declare_parameter<int>("occupancy_grid_w", occupancy_grid_w_);
+    occupancy_grid_h_ = nh_->declare_parameter<int>("occupancy_grid_h", occupancy_grid_h_);
+    occupancy_grid_resolution_ = nh_->declare_parameter<float>("occupancy_grid_resolution", occupancy_grid_resolution_);
+    max_total_cost_ = std::reduce(cloud_weights_.begin(), cloud_weights_.end());; // not including sidelobes TODO: this is vulnerable to changes
+    
+    if (publish_occupancy_grid_) {
+      RCLCPP_INFO(nh_->get_logger(),
+        "Will be publishing occupancy grid at '/map_occupancy_grid'. This is used primarily to supply global costmap of nav2 with planner information.");
+      RCLCPP_INFO(nh_->get_logger(),
+        "Some of the settings for '/map_occupancy_grid' are:\nwidth: %d\nheight: %d\nresolution: %f\nmax cost of map: %f",
+        occupancy_grid_w_,
+        occupancy_grid_h_,
+        occupancy_grid_resolution_,
+        max_total_cost_
+      );
+    }
+      
     tf_ = std::make_shared<tf2_ros::Buffer>(nh_->get_clock());
     tf_sub_ = std::make_shared<tf2_ros::TransformListener>(*tf_);
 
@@ -208,7 +230,22 @@ public:
     path_pub_ = nh_->create_publisher<nav_msgs::msg::Path>("path", 2);
     planning_freq_pub_ =
         nh_->create_publisher<std_msgs::msg::Float32>("planning_freq", 2);
+    occ_grid_pub_ = nh_->create_publisher<nav_msgs::msg::OccupancyGrid>("map_occupancy_grid", rclcpp::SystemDefaultsQoS());
 
+    if(publish_occupancy_grid_) {
+      RCLCPP_INFO(nh_->get_logger(),
+      "Sending one empty msg to '/map_occupancy_grid' to initialize nav2 global_costmap.");
+      geometry_msgs::msg::Pose p{};
+      p.position.x = 0.0;
+      p.position.y = 0.0;
+      p.position.z = 0.0;
+      p.orientation.x = 0.0;
+      p.orientation.y = 0.0;
+      p.orientation.z = 0.0;
+      p.orientation.w = 1.0;
+      createAndPublishMapOccupancyGrid(p);
+    }
+    
     for (int i = 0; i < num_input_clouds; ++i) {
       std::stringstream ss;
       ss << "input_cloud_" << i;
@@ -370,10 +407,9 @@ public:
                 t_part.seconds_elapsed());
     createAndPublishMapCloud(sp);
 
-    // If planning for a given goal, return path to the closest reachable
-    // point from the goal.
-    t_part.reset();
-    if (isValid(req->goal.pose.position)) {
+    if(publish_occupancy_grid_) {
+      createAndPublishMapOccupancyGrid(start.pose);
+    }
       Vec3 p1 = toVec3(req->goal.pose.position);
       p1.z() = 0.f;
 
@@ -448,6 +484,82 @@ public:
     cloud.header.stamp = nh_->get_clock()->now();
     fillMapCloud(cloud, grid_, sp.pathCosts());
     map_pub_->publish(cloud);
+  }
+  
+  void fillMapOccupancyGrid(nav_msgs::msg::OccupancyGrid &occ_grid, const tf2::Quaternion &q) {
+    occ_grid.data.assign(
+        occ_grid.info.width * occ_grid.info.height,
+        -1
+    );
+
+    auto q_inv = q.inverse(); 
+    
+    for (VertexId v = 0; v < grid_.size(); ++v) {
+      const auto p = grid_.point(v);
+      int data_idx = pointToOccupancyGridCell(p, occ_grid, q_inv);
+      if (data_idx==-1) {
+        continue;
+      }
+      // RCLCPP_WARN(nh_->get_logger(), "cell costs %f %f %f %f", grid_.costs(v)[0], grid_.costs(v)[1], grid_.costs(v)[2], grid_.costs(v)[3]);
+      if (naex::grid::is_obstacle(v, grid_, cost_thresholds_, cloud_weights_)) {
+        occ_grid.data[data_idx] = 127;
+      } else {
+        occ_grid.data[data_idx] = 0;
+      }
+      // occ_grid.data[data_idx] = std::clamp((int)(grid_.costs(v).total()*127/max_total_cost_), 0, 10);
+    }
+  }
+
+  int pointToOccupancyGridCell(const Point2f &p, nav_msgs::msg::OccupancyGrid &occ_grid, const tf2::Quaternion &q_inv) {
+    int cell = -1;
+    geometry_msgs::msg::Point cell_p;
+    cell_p.x = p.x - occ_grid.info.origin.position.x;
+    cell_p.y = p.y - occ_grid.info.origin.position.y;
+
+    int cell_x = std::floor(cell_p.x/occ_grid.info.resolution);
+    int cell_y = std::floor(cell_p.y/occ_grid.info.resolution);
+
+    if (cell_x >= 0 && cell_x < occ_grid.info.width) {
+      if (cell_y >= 0 && cell_y < occ_grid.info.height) {
+        cell = cell_x + occ_grid.info.width * cell_y;
+      }
+    }
+    return cell;
+  }
+
+  geometry_msgs::msg::Point getOccupancyGridOrigin(const geometry_msgs::msg::Pose &robot_pose,
+                                                    const nav_msgs::msg::OccupancyGrid &occ_grid,
+                                                    const tf2::Quaternion &q) {
+    geometry_msgs::msg::Point origin_vec;
+
+    origin_vec.x = -(float)(occ_grid.info.width)/2.*occ_grid.info.resolution;
+    origin_vec.y = -(float)(occ_grid.info.height)/2.*occ_grid.info.resolution;
+      
+    geometry_msgs::msg::Point origin;
+    origin.x = robot_pose.position.x + origin_vec.x;
+    origin.y = robot_pose.position.y + origin_vec.y;
+
+    return origin;
+  }
+
+  void createAndPublishMapOccupancyGrid(const geometry_msgs::msg::Pose &start) {
+    tf2::Quaternion q;
+    tf2::fromMsg(start.orientation, q);
+
+    nav_msgs::msg::OccupancyGrid occ_grid;
+    occ_grid.header.frame_id = map_frame_;
+    auto now = nh_->get_clock()->now();
+    occ_grid.header.stamp = now;
+    occ_grid.info.map_load_time = now;
+    occ_grid.info.resolution = grid_.cellSize();
+    occ_grid.info.width = occupancy_grid_w_;
+    occ_grid.info.height = occupancy_grid_h_;
+    
+    geometry_msgs::msg::Point origin = getOccupancyGridOrigin(start, occ_grid, q);
+    occ_grid.info.origin.position = origin;         // assume the starting pose from the request is the robot's current pose
+
+    fillMapOccupancyGrid(occ_grid, q);
+    occ_grid_pub_->publish(occ_grid);
   }
 
   bool planSafe(nav_msgs::srv::GetPlan::Request::SharedPtr req,
@@ -614,6 +726,13 @@ protected:
   rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr local_map_pub_;
   rclcpp::Publisher<std_msgs::msg::Float32>::SharedPtr planning_freq_pub_;
   rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr path_pub_;
+  rclcpp::Publisher<nav_msgs::msg::OccupancyGrid>::SharedPtr occ_grid_pub_;
+  bool publish_occupancy_grid_{true};
+  int occupancy_grid_w_{500};
+  int occupancy_grid_h_{500};
+  float occupancy_grid_resolution_{0.4};
+  float max_total_cost_{2.};  // currently not used
+  std::vector<double> cost_thresholds_;
 
   // Subscribers
   std::vector<rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr>
