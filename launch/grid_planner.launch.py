@@ -12,11 +12,19 @@ def generate_launch_description():
                 output="screen",
                 parameters=[
                     {
-                        "use_astar": False,
-                        "frontier_min_dist": 2.,
-                        "frontier_max_neighbors": 5,
+                        "use_astar": True,
+                        "astar_max_range": 50.0, # meters radius to perform search around the start vertex
+                        "frontier_min_dist": 2.,    # generally keep this above lookahead point distance of controller
+                        "frontier_max_neighbors": 7, # probably don't change this
+                        "max_relative_dist_to_goal": 2.0,
+
+                        # if start is further than this from the nearest traversable point,
+                        # we will just plan a straight line to the goal
+                        # (this should only happen when using navigate through poses)
+                        "max_start_to_traversable_dist": 2.0,
+                        
                         "position_field": "x",
-                        "map_frame": "gps_odom",
+                        "map_frame": "local_odom",
                         "robot_frame": "base_link",
                         "max_cloud_age": 5.0,
                         "input_range": 5.0,
@@ -34,13 +42,10 @@ def generate_launch_description():
                         "cloud_weights": [
                             2.0,
                         ],  # BEST RUN WAS WITH [1.0, 2.0, 10.0]
-                        "cost_thresholds": [
-                            0.5,
-                        ],
                         "max_costs": [
-                            float("nan"),
+                            0.8,
                         ],
-                        "default_costs": [
+                        "default_costs": [   # Careful that these are never multiplied by the cloud_weights!!!
                             0.5
                         ],
                         "neighborhood": 8,

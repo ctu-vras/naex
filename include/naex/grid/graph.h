@@ -92,14 +92,28 @@ Cost distance8(int i) {
   return 0.0;
 }
 
+// Also used in planner.h, so keep it outside of Graph class.
+bool costsInBounds(const Costs &costs, const Costs &max_costs_absolute) {
+  for (size_t i = 0; i < 4; ++i) {
+    // Skip if one of the max cost is invalid.
+    if (!std::isfinite(max_costs_absolute[i])) {
+      continue;
+    }
+    if (!(costs[i] <= max_costs_absolute[i])) {
+      return false;
+    }
+  }
+  return true;
+}
+
 /** https://www.boost.org/doc/libs/1_75_0/libs/graph/doc/adjacency_list.html */
 class Graph {
 public:
   static constexpr Cost INF = std::numeric_limits<Cost>::infinity();
 
   Graph(const Grid &grid, const uint8_t neighborhood = 8,
-        const Costs &max_costs = Costs())
-      : grid_(grid), neighborhood_(neighborhood), max_costs_(max_costs) {
+        const Costs &max_costs_absolute = Costs())
+      : grid_(grid), neighborhood_(neighborhood), max_costs_absolute_(max_costs_absolute) {
     assert(neighborhood == 4 || neighborhood == 8);
   }
   Graph() : Graph(Grid()) {}
@@ -134,27 +148,14 @@ public:
     return s;
   }
 
-  bool costsInBounds(const Costs &costs) const {
-    for (size_t i = 0; i < 4; ++i) {
-      // Stop on first invalid max cost.
-      if (!std::isfinite(max_costs_[i])) {
-        break;
-      }
-      if (!(costs[i] <= max_costs_[i])) {
-        return false;
-      }
-    }
-    return true;
-  }
-
   inline Cost cost(const EdgeId &e) const {
     // Ensure all costs are in bounds if provided.
     const auto &c0 = grid_.costs(source(e));
-    if (!costsInBounds(c0)) {
+    if (!costsInBounds(c0, max_costs_absolute_)) {
       return INF;
     }
     const auto &c1 = grid_.costs(target(e));
-    if (!costsInBounds(c1)) {
+    if (!costsInBounds(c1, max_costs_absolute_)) {
       return INF;
     }
 
@@ -172,7 +173,7 @@ public:
 protected:
   const Grid &grid_;
   const uint8_t neighborhood_;
-  const Costs max_costs_;
+  const Costs max_costs_absolute_;
 };
 
 class EdgeCosts {
