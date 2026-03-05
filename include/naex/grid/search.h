@@ -274,11 +274,17 @@ class BFS {
       );
 
       // Populate visited_ from color map
+      int num_visited = 0;
       for (std::size_t i = 0; i < colors_.size(); ++i) {
-        visited_[i] = (colors_[i] != boost::white_color) ? 1 : 0;
+        if (colors_[i] != boost::white_color) {
+          visited_[i] = 1;
+          ++num_visited;
+        } else {
+          visited_[i] = 0;
+        }
       }
 
-      RCLCPP_WARN(nh_->get_logger(), "BFS finished visiting %lu vertices.", visited_.size());
+      RCLCPP_WARN(nh_->get_logger(), "BFS visited %u/%lu vertices.", num_visited, visited_.size());
     }
 
     const std::vector<std::uint8_t>& visited() const { return visited_; }

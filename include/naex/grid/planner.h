@@ -171,15 +171,16 @@ public:
     std::vector<float> max_costs_relative(cost_fields_.size());
     std::vector<float> default_costs(cost_fields_.size());
     for (int i = 0; i < num_input_clouds; ++i) {
-      max_costs_relative.push_back(std::numeric_limits<float>::quiet_NaN());
+      max_costs_relative.push_back(std::numeric_limits<float>::infinity());
       default_costs.push_back(1.f);
     }
     max_costs_relative_ =
         nh_->declare_parameter<std::vector<float>>("max_costs_relative", max_costs_relative);
     max_costs_absolute_ = std::vector<float>(cost_fields_.size(), std::numeric_limits<float>::infinity());
     for (int i = 0; i < max_costs_relative_.size(); ++i) {
-      if (std::isfinite(max_costs_relative_[i])) {
+      if (std::isfinite(max_costs_relative_[i]) && !std::isnan(max_costs_relative_[i])) {
         max_costs_absolute_[i] = max_costs_relative_[i] * cloud_weights_[i];
+        RCLCPP_INFO(nh_->get_logger(), "max abs %f max rel %f w %f", max_costs_absolute_[i], max_costs_relative_[i], cloud_weights_[i]);
       }
     }
 
@@ -513,14 +514,23 @@ public:
       }
 
       Value dist = (toVec3(grid_.point(v)) - p0).norm();
+
+      // RCLCPP_INFO(nh_->get_logger(),
+      // "Candidate traversable point to start: %s (dist %.3f).",
+      // format(toVec3(grid_.point(v))).c_str(), dist);
+
       if (dist < best_dist) {
         best_v = v;
         best_dist = dist;
       }
     }
-    RCLCPP_INFO(nh_->get_logger(),
-                "Closest traversable point to start: %s (%.3f).",
-                format(toVec3(grid_.point(best_v))).c_str(), best_dist);
+    if (best_v != INVALID_VERTEX) {
+      RCLCPP_INFO(nh_->get_logger(),
+      "Closest traversable point to start: %s (dist %.3f).",
+      format(toVec3(grid_.point(best_v))).c_str(), best_dist);
+    } else {
+      RCLCPP_ERROR(nh_->get_logger(), "No traversable points in graph!");
+    }
     return std::make_pair(best_dist, best_v);
   }
 
@@ -611,9 +621,12 @@ public:
         // Start cell is not traversable .
         RCLCPP_WARN(nh_->get_logger(), "Start position %s is not traversable.",
                     format(toVec3(grid_.point(v0))).c_str());
-         std::pair<float, VertexId> nearest_traversable = getNearestTraversableVertex(p0);
-         float best_dist = nearest_traversable.first;
-         VertexId best_v = nearest_traversable.second;
+          std::pair<float, VertexId> nearest_traversable = getNearestTraversableVertex(p0);
+          float best_dist = nearest_traversable.first;
+          VertexId best_v = nearest_traversable.second;
+        if (best_v == INVALID_VERTEX) {
+          return false;
+        }
         if (best_dist <= max_start_to_traversable_dist_) {
           // Nearest traversable point is near -> plan from this point instead.
           v0 = best_v;
@@ -623,7 +636,7 @@ public:
           // Nearest traversable point is far -> fail to plan.
           RCLCPP_ERROR(nh_->get_logger(),
             "Start point is further than max_start_to_traversable_dist_ (%.3f > %.3f m) from the closest traversable point %s.\nFailed to plan!",
-            best_dist, max_start_to_traversable_dist_, format(toVec3(grid_.point(v0))).c_str());
+            best_dist, max_start_to_traversable_dist_, format(toVec3(grid_.point(best_v))).c_str());
             return false;
         }
       }
@@ -634,6 +647,9 @@ public:
       std::pair<float, VertexId> nearest_traversable = getNearestTraversableVertex(p0);
       float best_dist = nearest_traversable.first;
       VertexId best_v = nearest_traversable.second;
+      if (best_v == INVALID_VERTEX) {
+          return false;
+      }
       if (best_dist <= max_start_to_traversable_dist_) {
         // Nearest traversable point is near -> plan from this point instead.
         v0 = best_v;
@@ -643,7 +659,7 @@ public:
         // Nearest traversable point is far -> return straight line to goal.
         RCLCPP_WARN(nh_->get_logger(),
           "Start point is further than max_start_to_traversable_dist_ (%.3f > %.3f m) from the closest traversable point %s.\nPlanning straight line to goal!",
-          best_dist, max_start_to_traversable_dist_, format(toVec3(grid_.point(v0))).c_str());
+          best_dist, max_start_to_traversable_dist_, format(toVec3(grid_.point(best_v))).c_str());
         returnStraightLinePlan(res, start, goal);
         return true;
       }

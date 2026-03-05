@@ -42,7 +42,7 @@ def generate_launch_description():
                         "cloud_weights": [
                             2.0,
                         ],  # BEST RUN WAS WITH [1.0, 2.0, 10.0]
-                        "max_costs": [
+                        "max_costs_relative": [
                             0.8,
                         ],
                         "default_costs": [   # Careful that these are never multiplied by the cloud_weights!!!
