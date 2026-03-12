@@ -78,6 +78,8 @@ void appendPath(const std::vector<VertexId> &path_vertices, const Grid &grid,
   path.poses.reserve(path.poses.size() + path_vertices.size());
   for (const auto &v : path_vertices) {
     geometry_msgs::msg::PoseStamped pose;
+    pose.header.frame_id = path.header.frame_id;
+    pose.header.stamp = path.header.stamp;
     pose.pose.position.x = grid.point(v).x;
     pose.pose.position.y = grid.point(v).y;
     pose.pose.position.z = 0.0;
@@ -543,11 +545,15 @@ public:
 
   void returnStraightLinePlan(nav_msgs::srv::GetPlan::Response::SharedPtr res,
                               geometry_msgs::msg::PoseStamped start,
-                              geometry_msgs::msg::PoseStamped goal) {
-    res->plan.header.frame_id = map_frame_;
-    res->plan.header.stamp = nh_->get_clock()->now();
-    res->plan.poses.push_back(start);
-    res->plan.poses.push_back(goal);
+                              geometry_msgs::msg::PoseStamped goal,
+                              std::string request_frame) {
+    nav_msgs::msg::Path local_plan;
+    local_plan.header.frame_id = map_frame_;
+    local_plan.header.stamp = nh_->get_clock()->now();
+    local_plan.poses.push_back(start);
+    local_plan.poses.push_back(goal);
+
+    res->plan = local_plan;
 
     RCLCPP_INFO(nh_->get_logger(),
                 "Planning straight line");
@@ -572,12 +578,18 @@ public:
     geometry_msgs::msg::PoseStamped start = req->start;
     geometry_msgs::msg::PoseStamped goal = req->goal;
 
+    if (start.header.frame_id != goal.header.frame_id) {
+      RCLCPP_WARN(nh_->get_logger(), "Start and goal frame_id do not match ('%s' vs '%s'). Taking start frame as the one for the response.",
+                  start.header.frame_id.c_str(), goal.header.frame_id.c_str());
+    }
+    std::string request_frame = req->start.header.frame_id; // This should be nav2's global frame.
+
     start.header.stamp = nh_->now();
     goal.header.stamp = nh_->now();
 
-    if(req->start.header.frame_id != map_frame_) {
+    if(request_frame != map_frame_) {
       RCLCPP_WARN_THROTTLE(nh_->get_logger(), *nh_->get_clock(), 1.0, "Start pose frame_id '%s' does not match map frame_id '%s'. Attempting to transform.",
-                  req->start.header.frame_id.c_str(), map_frame_.c_str());
+                  request_frame.c_str(), map_frame_.c_str());
       start = tf_->transform(start, map_frame_, tf2::durationFromSec(tf_timeout_));
     }
 
@@ -621,9 +633,9 @@ public:
       // Grid contains start cell.
       v0 = grid_.cellId(grid_.pointToCell({p0.x(), p0.y()}));
       if (naex::grid::costsInBounds(grid_.costs(v0), max_costs_absolute_)) {
+        // Start cell is traversable -> perfect, plan from there, do nothing.
         RCLCPP_INFO(nh_->get_logger(), "Planning from start position %s.",
                     format(toVec3(grid_.point(v0))).c_str());
-        // Start cell is traversable -> perfect, plan from there, do nothing.
       } else {
         // Start cell is not traversable .
         RCLCPP_WARN(nh_->get_logger(), "Start position %s is not traversable.",
@@ -667,7 +679,7 @@ public:
         RCLCPP_WARN(nh_->get_logger(),
           "Start point is further than max_start_to_traversable_dist_ (%.3f > %.3f m) from the closest traversable point %s.\nPlanning straight line to goal!",
           best_dist, max_start_to_traversable_dist_, format(toVec3(grid_.point(best_v))).c_str());
-        returnStraightLinePlan(res, start, goal);
+        returnStraightLinePlan(res, start, goal, request_frame);
         return true;
       }
     }
@@ -677,15 +689,26 @@ public:
       Timer t_adhoc;
       clearAdHocLayer();
       
-      // Extract robot yaw from start pose orientation
-      auto &q = start.pose.orientation;
-      float robot_yaw = atan2(2.0f * (q.w * q.z + q.x * q.y),
-                              1.0f - 2.0f * (q.y * q.y + q.z * q.z));
-      
-      applyAdHocCosts(p0, robot_yaw);
-      RCLCPP_DEBUG(nh_->get_logger(),
-                   "Applied ad-hoc costs at robot position %s, yaw %.3f rad: %.3f s.",
-                   format(p0).c_str(), robot_yaw, t_adhoc.seconds_elapsed());
+      // Make sure that the starting pose is close enough to the robot pose (e.g. not true for navigate through poses).
+      // This is obviously not an ideal solution, but it should fix any issues with unwanted adhoc banana appearing where it shouldn't.
+      auto start_in_robot_frame = tf_->transform(start, robot_frame_, tf2::durationFromSec(tf_timeout_));
+      if (std::fabs(start_in_robot_frame.pose.position.x) > 1e-1 ||
+          std::fabs(start_in_robot_frame.pose.position.y) > 1e-1 ||
+          std::fabs(start_in_robot_frame.pose.orientation.w) < 0.9961947) {
+        RCLCPP_WARN(nh_->get_logger(),
+          "Start pose in robot frame is not close to the origin: %s. Ad-hoc costs not applied!",
+          format(start_in_robot_frame.pose.position).c_str());
+      } else {
+        // Extract robot yaw from start pose orientation
+        auto &q = start.pose.orientation;
+        float robot_yaw = atan2(2.0f * (q.w * q.z + q.x * q.y),
+                                1.0f - 2.0f * (q.y * q.y + q.z * q.z));
+        
+        applyAdHocCosts(p0, robot_yaw);
+        RCLCPP_DEBUG(nh_->get_logger(),
+                    "Applied ad-hoc costs at robot position %s, yaw %.3f rad: %.3f s.",
+                    format(p0).c_str(), robot_yaw, t_adhoc.seconds_elapsed());
+      }
     }
     
     if (!isValid(goal.pose.position)) {
@@ -793,13 +816,19 @@ public:
         // That is if the frontier gets us closer to the goal.
         auto v_frontier = getCheapestFrontier(sp, p0, p1, frontier_min_dist_, frontier_max_neighbors_); 
         // Value frontier_to_goal_dist = sp.cheapest_path_euclidean_dist(v0, v_frontier);
-        Value euclidean_frontier_to_goal_dist = (toVec3(grid_.point(v_frontier)) - toVec3(grid_.point(v_goal))).norm();
-        if (euclidean_frontier_to_goal_dist < euclidean_dist_to_goal) {
-          RCLCPP_INFO(nh_->get_logger(), "frontier set as temporary goal with dist to goal %f", euclidean_frontier_to_goal_dist);
-          v1 = v_frontier;
+
+        if (v_frontier != INVALID_VERTEX) {
+          Value euclidean_frontier_to_goal_dist = (toVec3(grid_.point(v_frontier)) - toVec3(grid_.point(v_goal))).norm();
+          if (euclidean_frontier_to_goal_dist < euclidean_dist_to_goal) {
+            RCLCPP_INFO(nh_->get_logger(), "frontier set as temporary goal with dist to goal %f", euclidean_frontier_to_goal_dist);
+            v1 = v_frontier;
+          } else {
+            RCLCPP_INFO(nh_->get_logger(), "frontier doesn't get us closer to goal, using path to goal");
+            v1 = v_goal;
+          }
         } else {
-          RCLCPP_INFO(nh_->get_logger(), "frontier doesn't get us closer to goal, using path to goal");
-          v1 = v_goal;
+          // down the way we deal with it being invalid
+          v1 = v_frontier;
         }
       } 
 
@@ -921,9 +950,9 @@ public:
       // RCLCPP_WARN(nh_->get_logger(), "cell costs %f %f %f %f", grid_.costs(v)[0], grid_.costs(v)[1], grid_.costs(v)[2], grid_.costs(v)[3]);
       auto costs = grid_.costs(v);
       if (naex::grid::costsInBounds(costs, max_costs_absolute_)) {
-        occ_grid.data[data_idx] = 127;
-      } else {
         occ_grid.data[data_idx] = 0;
+      } else {
+        occ_grid.data[data_idx] = 127;
       }
       // occ_grid.data[data_idx] = std::clamp((int)(grid_.costs(v).total()*127/max_total_cost_), 0, 10);
     }
