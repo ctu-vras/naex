@@ -402,10 +402,17 @@ public:
     frontiers_pub_->publish(array);
   }
 
-  VertexId getCheapestFrontier(const ShortestPaths &sp, const Vec3 &start, const Vec3 &goal, const Value min_dist, const int max_neighbors) {
-    auto full_graph    = sp.full_graph();
-    auto filtered_graph = sp.filtered_graph();
-    const std::vector<std::uint8_t> visited = sp.visited();
+  VertexId getCheapestFrontier(const std::shared_ptr<ShortestPaths> sp, const Vec3 &start, const Vec3 &goal, const Value min_dist, const int max_neighbors) {
+    // Cast to AstarShortestPaths to access AStar-specific members.
+    const auto astar_sp = std::dynamic_pointer_cast<AstarShortestPaths>(sp);
+    if (!astar_sp) {
+        RCLCPP_ERROR(nh_->get_logger(), "getCheapestFrontier called with non-Astar ShortestPaths!");
+        return INVALID_VERTEX;
+    }
+    
+    auto full_graph    = astar_sp->full_graph();
+    auto filtered_graph = astar_sp->filtered_graph();
+    const std::vector<std::uint8_t> visited = astar_sp->visited();
 
     // 1. Collect all frontiers into a flat grid
     // "traversable" == visited during SP search AND further than min_dist from start
@@ -420,7 +427,7 @@ public:
       // Count neighbours in filtered graph (frontier == degree <= max_neighbors)
       int deg = 0;
       typename boost::graph_traits<
-        boost::filtered_graph<Graph, boost::keep_all, VertexFilter>
+        boost::filtered_graph<Graph, boost::keep_all, MaxRangeVertexFilter>
       >::out_edge_iterator ei, ei_end;
       for (boost::tie(ei, ei_end) = boost::out_edges(v, filtered_graph); ei != ei_end; ++ei) {
         if (boost::source(*ei, filtered_graph) != boost::target(*ei, filtered_graph))
@@ -430,7 +437,7 @@ public:
       if (deg <= max_neighbors) {
         auto p = full_graph.grid().point(v);
         frontiers_grid.createCell(frontiers_grid.pointToCell(p));
-        frontier_costs.push_back(sp.fValue(v));
+        frontier_costs.push_back(astar_sp->fValue(v));
         traversable.push_back(is_traversable);
       }
     }
@@ -697,7 +704,14 @@ public:
     }
 
     // Run search.
-    ShortestPaths sp(nh_, grid_, v0, p1, is_goal_explored, use_astar_, astar_max_range_, neighborhood_, max_costs_absolute_);
+    std::shared_ptr<ShortestPaths> sp;
+    if (use_astar_) {
+      sp = std::make_shared<AstarShortestPaths>(nh_, grid_, v0, p1, is_goal_explored, astar_max_range_, neighborhood_, max_costs_absolute_);
+    } else {
+      sp = std::make_shared<DijkstraShortestPaths>(grid_, v0, neighborhood_, max_costs_absolute_);
+    }
+
+    // ShortestPaths sp(nh_, grid_, v0, p1, is_goal_explored, use_astar_, astar_max_range_, neighborhood_, max_costs_absolute_);
     if (use_astar_) {
       RCLCPP_INFO(nh_->get_logger(), "AStar (%lu pts before filtering): %.3f s.", grid_.size(),
                   t_part.seconds_elapsed());
@@ -711,6 +725,9 @@ public:
     VertexId v1 = INVALID_VERTEX;
 
     if (use_astar_) {
+      // Cast to AstarShortestPaths to access AStar-specific members.
+      const auto astar_sp = std::static_pointer_cast<AstarShortestPaths>(sp);
+      
       bool consider_frontier = false;
       Value euclidean_dist_to_goal = (toVec3(grid_.point(v0)) - p1).norm();
 
@@ -719,13 +736,13 @@ public:
         is_goal_in_obstacle = !naex::grid::costsInBounds(grid_.costs(v_goal), max_costs_absolute_);
       }
 
-      if (sp.astar_found_goal()) {
+      if (astar_sp->found_goal()) {
         // If using astar and the goal point is part of the graph.
         // In this case calculate the distance of the cheapest path.
         // If it is not too long compared to the euclidean distance between start and goal
         // then consider it admissible.
         // If it is too long, consider the cheapest frontier as a substitute.
-        Value start_to_goal_dist = sp.cheapest_path_euclidean_dist(nh_, v0, v_goal);
+        Value start_to_goal_dist = astar_sp->cheapest_path_euclidean_dist(nh_, v0, v_goal);
         if (start_to_goal_dist > max_relative_dist_to_goal_ * euclidean_dist_to_goal) {
           consider_frontier = true;
           RCLCPP_INFO(nh_->get_logger(), "considering frontier\npath dist: %f, max relative dist: %f, start-goal euclidean dist: %f", start_to_goal_dist, max_relative_dist_to_goal_, euclidean_dist_to_goal);
@@ -738,8 +755,23 @@ public:
         RCLCPP_INFO(nh_->get_logger(), "Goal is in obstacle. Choosing nearest reachable point as target.");
         Value best_dist = std::numeric_limits<Cost>::infinity();
         // TODO: Use graph vertex iterator.
+
+        // typename boost::graph_traits<Graph>::vertex_iterator vi, vi_end;
+
+        // for (boost::tie(vi, vi_end) = boost::vertices(astar_sp->full_graph()); vi != vi_end; ++vi) {
+        //   if (astar_sp->fValue(*vi) > 1e9) { // filter unreachable points
+        //     continue;
+        //   }
+          
+        //   Value dist = (toVec3(grid_.point(*vi)) - p1).norm();
+        //   if (dist < best_dist) {
+        //     v1 = *vi;
+        //     best_dist = dist;
+        //   }
+        // }
+
         for (VertexId v = 0; v < grid_.size(); ++v) {
-          if (sp.fValue(v) > 1e9) { // filter unreachable points
+          if (astar_sp->fValue(v) > 1e9) { // filter unreachable points
             continue;
           }
           
@@ -780,8 +812,24 @@ public:
       
       Value best_dist = std::numeric_limits<Cost>::infinity();
       // TODO: Use graph vertex iterator.
+
+      // typename boost::graph_traits<Graph>::vertex_iterator vi, vi_end;
+
+      // for (boost::tie(vi, vi_end) = boost::vertices(sp->full_graph()); vi != vi_end; ++vi) {
+      //   if (!std::isfinite(sp->pathCost(*vi))) {
+      //     continue;
+      //   }
+        
+      //   Value dist = (toVec3(grid_.point(*vi)) - p1).norm();
+      //   if (dist < best_dist) {
+      //     v1 = *vi;
+      //     best_dist = dist;
+      //   }
+      // }
+
+
       for (VertexId v = 0; v < grid_.size(); ++v) {
-        if (!std::isfinite(sp.pathCost(v))) {
+        if (!std::isfinite(sp->pathCost(v))) {
           continue;
         }
         
@@ -804,13 +852,16 @@ public:
     RCLCPP_WARN(nh_->get_logger(),"v0 %u x %f y %f start", v0, grid_.point(v0).x, grid_.point(v0).y);
     RCLCPP_WARN(nh_->get_logger(),"v1 %u x %f y %f goal ", v1, grid_.point(v1).x, grid_.point(v1).y);
 
-    auto path_vertices = tracePathVertices(v0, v1, sp.predecessors());
-    res->plan.header.frame_id = map_frame_;
-    res->plan.header.stamp = nh_->get_clock()->now();
-    res->plan.poses.push_back(start);
-    appendPath(path_vertices, grid_, res->plan);
+    auto path_vertices = tracePathVertices(v0, v1, sp->predecessors());
+    nav_msgs::msg::Path local_plan;
+    local_plan.header.frame_id = map_frame_;
+    local_plan.header.stamp = nh_->get_clock()->now();
+    local_plan.poses.push_back(start);
+    appendPath(path_vertices, grid_, local_plan);
     // helhest 01/2026: add the actual goal point to the end of the path for goal checker down the path
-    res->plan.poses.push_back(goal);
+    local_plan.poses.push_back(goal);
+    
+    res->plan = local_plan;
 
     RCLCPP_INFO(nh_->get_logger(),
                 "Path with %lu poses toward goal %s planned (%.3f s).",
@@ -847,11 +898,11 @@ public:
     }
   }
 
-  void createAndPublishMapCloud(const ShortestPaths &sp) {
+  void createAndPublishMapCloud(const std::shared_ptr<ShortestPaths> sp) {
     sensor_msgs::msg::PointCloud2 cloud;
     cloud.header.frame_id = map_frame_;
     cloud.header.stamp = nh_->get_clock()->now();
-    fillMapCloud(cloud, grid_, sp.pathCosts(), sp.fValues());
+    fillMapCloud(cloud, grid_, sp->pathCosts(), sp->fValues());
     map_pub_->publish(cloud);
   }
   
