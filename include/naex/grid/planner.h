@@ -692,12 +692,12 @@ public:
       // Make sure that the starting pose is close enough to the robot pose (e.g. not true for navigate through poses).
       // This is obviously not an ideal solution, but it should fix any issues with unwanted adhoc banana appearing where it shouldn't.
       auto start_in_robot_frame = tf_->transform(start, robot_frame_, tf2::durationFromSec(tf_timeout_));
-      if (std::fabs(start_in_robot_frame.pose.position.x) > 1e-1 ||
-          std::fabs(start_in_robot_frame.pose.position.y) > 1e-1 ||
-          std::fabs(start_in_robot_frame.pose.orientation.w) < 0.9961947) {
+      if (std::fabs(start_in_robot_frame.pose.position.x) > 3. ||
+          std::fabs(start_in_robot_frame.pose.position.y) > 3. ||
+          std::fabs(start_in_robot_frame.pose.orientation.w) < 0.9) {
         RCLCPP_WARN(nh_->get_logger(),
-          "Start pose in robot frame is not close to the origin: %s. Ad-hoc costs not applied!",
-          format(start_in_robot_frame.pose.position).c_str());
+          "Start pose in robot frame is not close to the origin: %s ...... orientation %f. Ad-hoc costs not applied!",
+          format(start_in_robot_frame.pose.position).c_str(), start_in_robot_frame.pose.orientation.w);
       } else {
         // Extract robot yaw from start pose orientation
         auto &q = start.pose.orientation;
