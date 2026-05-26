@@ -47,9 +47,32 @@ target_link_libraries(
         OpenMP::OpenMP_CXX
 )
 
+add_executable(mule_planner src/mule_planner_node.cpp)
+ament_target_dependencies(
+    mule_planner
+        Boost
+        rclcpp
+        tf2_ros
+        nav_msgs
+        std_msgs
+        nav2_msgs
+        tf2_eigen
+        sensor_msgs
+        geometry_msgs
+        tf2_geometry_msgs
+        visualization_msgs
+)
+target_link_libraries(
+    mule_planner
+        Boost::graph
+        Boost::chrono
+        Eigen3::Eigen
+        OpenMP::OpenMP_CXX
+)
+
 install(
     TARGETS
-        grid_planner
+        grid_planner mule_planner
     DESTINATION lib/${PROJECT_NAME}
 )
 

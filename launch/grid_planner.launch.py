@@ -21,6 +21,9 @@ def generate_launch_description():
                         # if start is further than this from the nearest traversable point,
                         # we will just plan a straight line to the goal
                         # (this should only happen when using navigate through poses)
+                        # Because this only comes into play when the start is unexplored.
+                        # I could see this being a problem when we start the robot and its
+                        # position is naturally unexplored and at the same time there is obstacles all around
                         "max_start_to_traversable_dist": 2.0,
                         
                         "position_field": "x",

@@ -721,7 +721,7 @@ public:
     bool is_goal_explored = false;
     VertexId v_goal = INVALID_VERTEX;
     if (grid_.hasCell(grid_.pointToCell({p1.x(), p1.y()}))) {
-      // Goal is unexplored.
+      // Goal is explored.
       is_goal_explored = true;
       v_goal = grid_.cellId(grid_.pointToCell({p1.x(), p1.y()}));
     }

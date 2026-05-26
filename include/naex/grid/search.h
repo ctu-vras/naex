@@ -1,3 +1,4 @@
+#pragma once
 #include "naex/grid/graph.h"
 #include "naex/grid/grid.h"
 #include <boost/graph/dijkstra_shortest_paths_no_color_map.hpp>
