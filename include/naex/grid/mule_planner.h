@@ -27,6 +27,7 @@ class MulePlanner {
 
       neighborhood_ = nh_->declare_parameter<int>("neighborhood", neighborhood_);
 
+      path_sampling_dist_ = nh_->declare_parameter<float>("path_sampling_dist", path_sampling_dist_);
       cell_size_ = nh_->declare_parameter<float>("cell_size", 1.0f);
       float forget_factor = nh_->declare_parameter<float>("forget_factor", 1.0f);
       std::vector<float> default_costs = {0.5f};
@@ -92,7 +93,7 @@ class MulePlanner {
       }
 
       if (isPathObstacleFree(current_path)) {
-        auto republished_path = current_path;
+        auto republished_path = resamplePath(current_path);
         republished_path.header.stamp = nh_->get_clock()->now();
         path_pub_->publish(republished_path);
         RCLCPP_INFO(nh_->get_logger(),
@@ -216,7 +217,7 @@ class MulePlanner {
 
       if (isPathObstacleFree(current_path, goal_path_index + 1)) {
         appendPathSuffix(current_path, goal_path_index + 1, local_plan);
-        path_pub_->publish(local_plan);
+        path_pub_->publish(resamplePath(local_plan));
         RCLCPP_INFO(nh_->get_logger(),
                     "Published replanned prefix with original suffix, %lu poses total (%.3f s).",
                     local_plan.poses.size(), t.seconds_elapsed());
@@ -225,7 +226,7 @@ class MulePlanner {
 
       const auto traversable_path_length = pathLength(local_plan);
       if (traversable_path_length >= min_traversable_path_length_) {
-        path_pub_->publish(local_plan);
+        path_pub_->publish(resamplePath(local_plan));
         RCLCPP_INFO(nh_->get_logger(),
                     "Published traversable prefix only, length %.3f m with %lu poses (%.3f s).",
                     traversable_path_length, local_plan.poses.size(), t.seconds_elapsed());
@@ -356,6 +357,45 @@ class MulePlanner {
       return length;
     }
 
+    nav_msgs::msg::Path resamplePath(const nav_msgs::msg::Path &path) const {
+      if (path_sampling_dist_ <= 0.f || path.poses.size() < 2) {
+        return path;
+      }
+      nav_msgs::msg::Path out;
+      out.header = path.header;
+      out.poses.push_back(path.poses.front());
+      float carry = 0.f;
+      for (size_t i = 1; i < path.poses.size(); ++i) {
+        const auto &p0 = path.poses[i - 1].pose.position;
+        const auto &p1 = path.poses[i].pose.position;
+        const float dx = p1.x - p0.x;
+        const float dy = p1.y - p0.y;
+        const float dz = p1.z - p0.z;
+        const float seg_len = std::sqrt(dx * dx + dy * dy + dz * dz);
+        float d = path_sampling_dist_ - carry;
+        while (d <= seg_len) {
+          const float t = d / seg_len;
+          geometry_msgs::msg::PoseStamped pose = path.poses[i];
+          pose.pose.position.x = p0.x + t * dx;
+          pose.pose.position.y = p0.y + t * dy;
+          pose.pose.position.z = p0.z + t * dz;
+          out.poses.push_back(pose);
+          d += path_sampling_dist_;
+        }
+        carry = seg_len - (d - path_sampling_dist_);
+      }
+      const auto &last = path.poses.back().pose.position;
+      const auto &prev = out.poses.back().pose.position;
+      const float dist_to_last = std::sqrt(
+          (last.x - prev.x) * (last.x - prev.x) +
+          (last.y - prev.y) * (last.y - prev.y) +
+          (last.z - prev.z) * (last.z - prev.z));
+      if (dist_to_last > 1e-6f) {
+        out.poses.push_back(path.poses.back());
+      }
+      return out;
+    }
+
     void publishEmptyPath(const std::string &frame_id) {
       nav_msgs::msg::Path empty_path;
       empty_path.header.frame_id = frame_id;
@@ -409,6 +449,7 @@ class MulePlanner {
     float max_ts_diff_{0.5};
     float min_traversable_path_length_{0.0};
     float max_start_to_traversable_dist_{5.};
+    float path_sampling_dist_{0.f};  // 0 = disabled; >0 = resample path at this spacing (m)
     float cell_size_{1.0};
     Costs default_costs_;
 

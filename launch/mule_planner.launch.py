@@ -33,14 +33,15 @@ def generate_launch_description():
                         
                         "robot_frame": "base_link",
                         "position_field": "x",
-                        "max_cloud_age": 1.0,
-                        "max_ts_diff": 1.0,
+                        "max_cloud_age": 9999999999.0,
+                        "max_ts_diff": 9999999999.0,
                         "cell_size": 0.6,
                         "forget_factor": 1.0,
                         "cost_field": "traversability",
                         "default_costs": [0.5],
                         "neighborhood": 8,
                         "obstacle_cost_threshold": 0.7,
+                        "path_sampling_dist": 0.1, # meters between path waypoints (0 = disabled)
                         "use_sim_time": LaunchConfiguration("use_sim_time")
                     }
                 ],

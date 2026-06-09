@@ -3,23 +3,33 @@
 A package for robot navigation and exploration.
 It is a work-in-progress, so this description is incomplete and may be slightly out of date.
 
-## Nodes
-
-### planner
+## Planner
 
 The `planner` node internally builds a point map from input points clouds to assess traversability and plan paths globally.
-It provides [get_plan](http://docs.ros.org/en/noetic/api/nav_msgs/html/srv/GetPlan.html) service to handle planning requests.
-Both `start` and `goal` poses may be NaN.
+It provides `get_plan` service to handle planning requests.
+The `start`pose may be NaN, while the `goal` pose is required (no exploration mode).
 
 If `start` is not provided, the plan starts with the current robot position.
 Start `tolerance` in meters may be specified, which limits the distance from the requested starting position and the selected traversable starting point within the map.
 
-If `goal` is not provided, an exploration strategy selects it, maximizing reward/cost ratio.
-The reward captures visiting points from close-enough distance and prefers frontier points.
-Visiting points with the current robot, as opposed to other robots, may be preferred (`self_factor` > 0).
+If valid goal is provided, a path is planned between some start and goal vertices. Those are chosen like this (vs(vg) is start(goal) point converted to vertex in grid coords):
 
-If valid goal is provided, a path is planned to the reachable point which is closest to the specified goal.
-Positions of all robots are considered in assessing whether a point has been observed but robot own observation may be preferred.
+IF vs is explored:
+  IF vs is traversable:
+    keep vs
+  ELSE:
+    IF nearest traversable vertex to vs is close:
+      use that instead of vs
+    ELSE:
+      fail
+ELSE:
+  IF nearest traversable vertex to vs is close:
+    use that instead of vs
+  ELSE:
+    return a straight line to goal as a plan
+
+If vg is explored:
+
 
 The node assumes an external localization is provided.
 The last request is (by default) periodically repeated and updated plan is published.
