@@ -16,6 +16,8 @@ find_package(tf2_ros REQUIRED)
 find_package(nav_msgs REQUIRED)
 find_package(std_msgs REQUIRED)
 find_package(nav2_msgs REQUIRED)
+find_package(nav2_util REQUIRED)
+find_package(nav2_core REQUIRED)
 find_package(tf2_eigen REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(geometry_msgs REQUIRED)
@@ -33,6 +35,8 @@ ament_target_dependencies(
         nav_msgs
         std_msgs
         nav2_msgs
+        nav2_util
+        nav2_core
         tf2_eigen
         sensor_msgs
         geometry_msgs

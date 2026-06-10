@@ -12,6 +12,11 @@
 #include <geometry_msgs/msg/pose_stamped.hpp>
 #include <geometry_msgs/msg/transform_stamped.hpp>
 #include <nav2_msgs/srv/clear_entire_costmap.hpp>
+#include <nav2_msgs/action/compute_path_to_pose.hpp>
+#include <nav2_util/simple_action_server.hpp>
+#include <nav2_util/robot_utils.hpp>
+#include <nav2_core/planner_exceptions.hpp>
+
 #include <nav_msgs/msg/path.hpp>
 #include <nav_msgs/srv/get_plan.hpp>
 #include <nav_msgs/msg/occupancy_grid.hpp>
@@ -51,22 +56,28 @@ Vec3 toVec3(const Point2f &v) { return Vec3(v.x, v.y, 0.f); }
 
 void tracePathVertices(VertexId v0, VertexId v1,
                        const std::vector<VertexId> &predecessor,
-                       std::vector<VertexId> &path_vertices) {
+                       std::vector<VertexId> &path_vertices,
+                      rclcpp::Node::SharedPtr nh_) {
+  RCLCPP_WARN(nh_->get_logger(),"K");
   assert(predecessor[v0] == v0);
   Vertex v = v1;
   while (v != v0) {
+    RCLCPP_WARN(nh_->get_logger(),"L");
+    RCLCPP_WARN(nh_->get_logger(),"v0 %d v1 %d v %d", v0, v1, v);
     path_vertices.push_back(v);
     v = predecessor[v];
   }
+  RCLCPP_WARN(nh_->get_logger(),"M");
   path_vertices.push_back(v);
   std::reverse(path_vertices.begin(), path_vertices.end());
 }
 
 std::vector<VertexId>
 tracePathVertices(VertexId v0, VertexId v1,
-                  const std::vector<VertexId> &predecessor) {
+                  const std::vector<VertexId> &predecessor,
+                rclcpp::Node::SharedPtr nh_) {
   std::vector<VertexId> path_vertices;
-  tracePathVertices(v0, v1, predecessor, path_vertices);
+  tracePathVertices(v0, v1, predecessor, path_vertices, nh_);
   return path_vertices;
 }
 
@@ -284,7 +295,10 @@ public:
       p.orientation.y = 0.0;
       p.orientation.z = 0.0;
       p.orientation.w = 1.0;
-      createAndPublishMapOccupancyGrid(p);
+      {
+        std::lock_guard<std::mutex> lock(mtx_);
+        createAndPublishMapOccupancyGrid(p, grid_.cellSize());
+      }
     }
     
     for (int i = 0; i < num_input_clouds; ++i) {
@@ -327,6 +341,15 @@ public:
             "clear_plan_map",
             std::bind(&Planner::clearMap, this, std::placeholders::_1,
                       std::placeholders::_2));
+
+    actionServer = std::make_unique<nav2_util::SimpleActionServer<nav2_msgs::action::ComputePathToPose>>(
+      nh,
+      "compute_path_to_pose",
+      std::bind(&Planner::computePlan, this),
+      nullptr,
+      std::chrono::milliseconds(500),
+      true);
+    actionServer->activate();
 
     RCLCPP_INFO(nh_->get_logger(), "Node initialized.");
   }
@@ -513,20 +536,20 @@ public:
   }
 
 
-  std::pair<float,VertexId> getNearestTraversableVertex(const Vec3 &p0) {
+  std::pair<float,VertexId> getNearestTraversableVertex(const Vec3 &p0, const Grid &grid) {
     // Use the nearest traversable point to robot as the starting point.
     float best_dist = std::numeric_limits<float>::infinity();
     VertexId best_v = INVALID_VERTEX;
-    for (VertexId v = 0; v < grid_.size(); ++v) {
-      if (!naex::grid::costsInBounds(grid_.costs(v), max_costs_absolute_)) {
+    for (VertexId v = 0; v < grid.size(); ++v) {
+      if (!naex::grid::costsInBounds(grid.costs(v), max_costs_absolute_)) {
         continue;
       }
 
-      Value dist = (toVec3(grid_.point(v)) - p0).norm();
+      Value dist = (toVec3(grid.point(v)) - p0).norm();
 
       // RCLCPP_INFO(nh_->get_logger(),
       // "Candidate traversable point to start: %s (dist %.3f).",
-      // format(toVec3(grid_.point(v))).c_str(), dist);
+      // format(toVec3(grid.point(v))).c_str(), dist);
 
       if (dist < best_dist) {
         best_v = v;
@@ -536,53 +559,64 @@ public:
     if (best_v != INVALID_VERTEX) {
       RCLCPP_INFO(nh_->get_logger(),
       "Closest traversable point to start: %s (dist %.3f).",
-      format(toVec3(grid_.point(best_v))).c_str(), best_dist);
+      format(toVec3(grid.point(best_v))).c_str(), best_dist);
     } else {
       RCLCPP_ERROR(nh_->get_logger(), "No traversable points in graph!");
     }
     return std::make_pair(best_dist, best_v);
   }
 
-  void returnStraightLinePlan(nav_msgs::srv::GetPlan::Response::SharedPtr res,
-                              geometry_msgs::msg::PoseStamped start,
-                              geometry_msgs::msg::PoseStamped goal,
-                              std::string request_frame) {
+  nav_msgs::msg::Path returnStraightLinePlan(geometry_msgs::msg::PoseStamped start,
+                                            geometry_msgs::msg::PoseStamped goal,
+                                            std::string request_frame) {
     nav_msgs::msg::Path local_plan;
     local_plan.header.frame_id = map_frame_;
     local_plan.header.stamp = nh_->get_clock()->now();
     local_plan.poses.push_back(start);
     local_plan.poses.push_back(goal);
-
-    res->plan = local_plan;
-
+    
     RCLCPP_INFO(nh_->get_logger(),
                 "Planning straight line");
+    return local_plan;
   }
 
-  bool plan(nav_msgs::srv::GetPlan::Request::SharedPtr req,
+  bool computePlanReq(nav_msgs::srv::GetPlan::Request::SharedPtr req,
             nav_msgs::srv::GetPlan::Response::SharedPtr res) {
-    Timer t;
-    Timer t_part;
-    RCLCPP_INFO(nh_->get_logger(),
-                "Planning request from %s to %s with tolerance %.1f m.",
-                format(req->start.pose.position).c_str(),
-                format(req->goal.pose.position).c_str(), req->tolerance);
     last_request_ = req;
+    nav_msgs::msg::Path path;
+    if (plan(req->start, req->goal, path))
+      res->plan = path;
+    return true;
+  }
 
-    if (grid_.empty()) {
+  bool plan(geometry_msgs::msg::PoseStamped start,
+            geometry_msgs::msg::PoseStamped goal,
+            nav_msgs::msg::Path &path) {
+
+    Grid current_grid{};
+    {
+      std::lock_guard<std::mutex> lock(mtx_);
+      current_grid = grid_;
+    }
+    Timer t;
+    Timer t_parta;
+
+    // Timer t_part;
+    RCLCPP_INFO(nh_->get_logger(),
+                "Planning request from %s to %s.",
+                format(start.pose.position).c_str(),
+                format(goal.pose.position).c_str());
+
+    if (current_grid.empty()) {
       RCLCPP_WARN(nh_->get_logger(), "Cannot plan in empty grid.");
       return false;
     }
-
-    // Transform start and goal to map_frame.
-    geometry_msgs::msg::PoseStamped start = req->start;
-    geometry_msgs::msg::PoseStamped goal = req->goal;
 
     if (start.header.frame_id != goal.header.frame_id) {
       RCLCPP_WARN(nh_->get_logger(), "Start and goal frame_id do not match ('%s' vs '%s'). Taking start frame as the one for the response.",
                   start.header.frame_id.c_str(), goal.header.frame_id.c_str());
     }
-    std::string request_frame = req->start.header.frame_id; // This should be nav2's global frame.
+    std::string request_frame = start.header.frame_id; // This should be nav2's global frame.
 
     start.header.stamp = nh_->now();
     goal.header.stamp = nh_->now();
@@ -598,6 +632,9 @@ public:
                   goal.header.frame_id.c_str(), map_frame_.c_str());
       goal = tf_->transform(goal, map_frame_, tf2::durationFromSec(tf_timeout_));
     }
+
+    RCLCPP_INFO(nh_->get_logger(), "A %.3f s.", t_parta.seconds_elapsed());
+    Timer t_partb;
 
     // If start not valid, use the robot position instead.
     // TODO: this could be dangerous with navigate through poses in theory.
@@ -629,18 +666,21 @@ public:
     // Figure out the starting point for the search.
     VertexId v0 = INVALID_VERTEX;
 
-    if (grid_.hasCell(grid_.pointToCell({p0.x(), p0.y()}))) {
+    RCLCPP_INFO(nh_->get_logger(), "B %.3f s.", t_partb.seconds_elapsed());
+    Timer t_partc;
+
+    if (current_grid.hasCell(current_grid.pointToCell({p0.x(), p0.y()}))) {
       // Grid contains start cell.
-      v0 = grid_.cellId(grid_.pointToCell({p0.x(), p0.y()}));
-      if (naex::grid::costsInBounds(grid_.costs(v0), max_costs_absolute_)) {
+      v0 = current_grid.cellId(current_grid.pointToCell({p0.x(), p0.y()}));
+      if (naex::grid::costsInBounds(current_grid.costs(v0), max_costs_absolute_)) {
         // Start cell is traversable -> perfect, plan from there, do nothing.
         RCLCPP_INFO(nh_->get_logger(), "Planning from start position %s.",
-                    format(toVec3(grid_.point(v0))).c_str());
+                    format(toVec3(current_grid.point(v0))).c_str());
       } else {
         // Start cell is not traversable .
         RCLCPP_WARN(nh_->get_logger(), "Start position %s is not traversable.",
-                    format(toVec3(grid_.point(v0))).c_str());
-          std::pair<float, VertexId> nearest_traversable = getNearestTraversableVertex(p0);
+                    format(toVec3(current_grid.point(v0))).c_str());
+          std::pair<float, VertexId> nearest_traversable = getNearestTraversableVertex(p0, current_grid);
           float best_dist = nearest_traversable.first;
           VertexId best_v = nearest_traversable.second;
         if (best_v == INVALID_VERTEX) {
@@ -650,12 +690,12 @@ public:
           // Nearest traversable point is near -> plan from this point instead.
           v0 = best_v;
           RCLCPP_INFO(nh_->get_logger(), "Planning from nearest traversable point %s.",
-                    format(toVec3(grid_.point(v0))).c_str());
+                    format(toVec3(current_grid.point(v0))).c_str());
         } else {
           // Nearest traversable point is far -> fail to plan.
           RCLCPP_ERROR(nh_->get_logger(),
             "Start point is further than max_start_to_traversable_dist_ (%.3f > %.3f m) from the closest traversable point %s.\nFailed to plan!",
-            best_dist, max_start_to_traversable_dist_, format(toVec3(grid_.point(best_v))).c_str());
+            best_dist, max_start_to_traversable_dist_, format(toVec3(current_grid.point(best_v))).c_str());
             return false;
         }
       }
@@ -663,7 +703,7 @@ public:
       // Grid does not contain start cell.
       RCLCPP_WARN(nh_->get_logger(), "Start position %s is unexplored.",
                   format(p0).c_str());
-      std::pair<float, VertexId> nearest_traversable = getNearestTraversableVertex(p0);
+      std::pair<float, VertexId> nearest_traversable = getNearestTraversableVertex(p0, current_grid);
       float best_dist = nearest_traversable.first;
       VertexId best_v = nearest_traversable.second;
       if (best_v == INVALID_VERTEX) {
@@ -673,16 +713,19 @@ public:
         // Nearest traversable point is near -> plan from this point instead.
         v0 = best_v;
         RCLCPP_INFO(nh_->get_logger(), "Planning from nearest traversable point %s.",
-                    format(toVec3(grid_.point(v0))).c_str());
+                    format(toVec3(current_grid.point(v0))).c_str());
       } else {
         // Nearest traversable point is far -> return straight line to goal.
         RCLCPP_WARN(nh_->get_logger(),
           "Start point is further than max_start_to_traversable_dist_ (%.3f > %.3f m) from the closest traversable point %s.\nPlanning straight line to goal!",
-          best_dist, max_start_to_traversable_dist_, format(toVec3(grid_.point(best_v))).c_str());
-        returnStraightLinePlan(res, start, goal, request_frame);
+          best_dist, max_start_to_traversable_dist_, format(toVec3(current_grid.point(best_v))).c_str());
+        path = returnStraightLinePlan(start, goal, request_frame);
         return true;
       }
     }
+
+    RCLCPP_INFO(nh_->get_logger(), "C %.3f s.", t_partc.seconds_elapsed());
+    Timer t_partd;
 
     // Apply ad-hoc costs if enabled
     if (!adhoc_costs_.empty()) {
@@ -710,6 +753,9 @@ public:
                     format(p0).c_str(), robot_yaw, t_adhoc.seconds_elapsed());
       }
     }
+
+    RCLCPP_INFO(nh_->get_logger(), "D %.3f s.", t_partd.seconds_elapsed());
+    Timer t_parte;
     
     if (!isValid(goal.pose.position)) {
       RCLCPP_WARN(nh_->get_logger(), "Goal not valid.");
@@ -720,29 +766,34 @@ public:
     // Figure out whether the goal is explored, which is relevant for the search.
     bool is_goal_explored = false;
     VertexId v_goal = INVALID_VERTEX;
-    if (grid_.hasCell(grid_.pointToCell({p1.x(), p1.y()}))) {
+    if (current_grid.hasCell(current_grid.pointToCell({p1.x(), p1.y()}))) {
       // Goal is unexplored.
       is_goal_explored = true;
-      v_goal = grid_.cellId(grid_.pointToCell({p1.x(), p1.y()}));
+      v_goal = current_grid.cellId(current_grid.pointToCell({p1.x(), p1.y()}));
     }
+
+    RCLCPP_INFO(nh_->get_logger(), "E %.3f s.", t_parte.seconds_elapsed());
+    Timer t_partf;
 
     // Run search.
     std::shared_ptr<ShortestPaths> sp;
     if (use_astar_) {
-      sp = std::make_shared<AstarShortestPaths>(nh_, grid_, v0, p1, is_goal_explored, astar_max_range_, neighborhood_, max_costs_absolute_);
+      sp = std::make_shared<AstarShortestPaths>(nh_, current_grid, v0, p1, is_goal_explored, astar_max_range_, neighborhood_, max_costs_absolute_);
     } else {
-      sp = std::make_shared<DijkstraShortestPaths>(grid_, v0, neighborhood_, max_costs_absolute_);
+      sp = std::make_shared<DijkstraShortestPaths>(current_grid, v0, neighborhood_, max_costs_absolute_);
     }
 
-    // ShortestPaths sp(nh_, grid_, v0, p1, is_goal_explored, use_astar_, astar_max_range_, neighborhood_, max_costs_absolute_);
+    // ShortestPaths sp(nh_, current_grid, v0, p1, is_goal_explored, use_astar_, astar_max_range_, neighborhood_, max_costs_absolute_);
     if (use_astar_) {
-      RCLCPP_INFO(nh_->get_logger(), "AStar (%lu pts before filtering): %.3f s.", grid_.size(),
-                  t_part.seconds_elapsed());
+      RCLCPP_INFO(nh_->get_logger(), "AStar (%lu pts before filtering): %.3f s.", current_grid.size(),
+                  t_partf.seconds_elapsed());
     } else {
-      RCLCPP_INFO(nh_->get_logger(), "Dijkstra (%lu pts before filtering): %.3f s.", grid_.size(),
-                  t_part.seconds_elapsed());
+      RCLCPP_INFO(nh_->get_logger(), "Dijkstra (%lu pts before filtering): %.3f s.", current_grid.size(),
+                  t_partf.seconds_elapsed());
     }
-    createAndPublishMapCloud(sp);
+    createAndPublishMapCloud(sp, current_grid);
+
+    RCLCPP_WARN(nh_->get_logger(),"A");
 
     // Choose which point we select as the goal
     VertexId v1 = INVALID_VERTEX;
@@ -752,12 +803,13 @@ public:
       const auto astar_sp = std::static_pointer_cast<AstarShortestPaths>(sp);
       
       bool consider_frontier = false;
-      Value euclidean_dist_to_goal = (toVec3(grid_.point(v0)) - p1).norm();
+      Value euclidean_dist_to_goal = (toVec3(current_grid.point(v0)) - p1).norm();
 
       bool is_goal_in_obstacle = false;
       if (is_goal_explored) {
-        is_goal_in_obstacle = !naex::grid::costsInBounds(grid_.costs(v_goal), max_costs_absolute_);
+        is_goal_in_obstacle = !naex::grid::costsInBounds(current_grid.costs(v_goal), max_costs_absolute_);
       }
+    RCLCPP_WARN(nh_->get_logger(),"B");
 
       if (astar_sp->found_goal()) {
         // If using astar and the goal point is part of the graph.
@@ -773,6 +825,8 @@ public:
           RCLCPP_INFO(nh_->get_logger(), "Goal is close. Choosing it as plan target.");
           v1 = v_goal;
         }
+          RCLCPP_WARN(nh_->get_logger(),"C");
+
       } else if (is_goal_in_obstacle) {
         // In this case just select nearest reachable point as target.
         RCLCPP_INFO(nh_->get_logger(), "Goal is in obstacle. Choosing nearest reachable point as target.");
@@ -786,39 +840,47 @@ public:
         //     continue;
         //   }
           
-        //   Value dist = (toVec3(grid_.point(*vi)) - p1).norm();
+        //   Value dist = (toVec3(current_grid.point(*vi)) - p1).norm();
         //   if (dist < best_dist) {
         //     v1 = *vi;
         //     best_dist = dist;
         //   }
         // }
 
-        for (VertexId v = 0; v < grid_.size(); ++v) {
+        for (VertexId v = 0; v < current_grid.size(); ++v) {
           if (astar_sp->fValue(v) > 1e9) { // filter unreachable points
             continue;
           }
-          
-          Value dist = (toVec3(grid_.point(v)) - p1).norm();
+              RCLCPP_WARN(nh_->get_logger(),"D");
+
+          Value dist = (toVec3(current_grid.point(v)) - p1).norm();
           if (dist < best_dist) {
             v1 = v;
             best_dist = dist;
           }
         }
         RCLCPP_INFO(nh_->get_logger(), "Plan target is nearest reachable point to goal: %s",
-                    format(toVec3(grid_.point(v1))).c_str()); 
+                    format(toVec3(current_grid.point(v1))).c_str()); 
       } else {
         // If goal unexplored thus unreachable, select the cheapest frontier point as a temporary goal.
-        v1 = getCheapestFrontier(sp, p0, p1, frontier_min_dist_, frontier_max_neighbors_); 
+            RCLCPP_WARN(nh_->get_logger(),"E");
+v1 = getCheapestFrontier(sp, p0, p1, frontier_min_dist_, frontier_max_neighbors_); 
+    RCLCPP_WARN(nh_->get_logger(),"F");
+
       }
 
       if (consider_frontier) {
         // If found start but the distance is long, consider the frontier.
         // That is if the frontier gets us closer to the goal.
+            RCLCPP_WARN(nh_->get_logger(),"G");
+
         auto v_frontier = getCheapestFrontier(sp, p0, p1, frontier_min_dist_, frontier_max_neighbors_); 
+            RCLCPP_WARN(nh_->get_logger(),"H");
+
         // Value frontier_to_goal_dist = sp.cheapest_path_euclidean_dist(v0, v_frontier);
 
         if (v_frontier != INVALID_VERTEX) {
-          Value euclidean_frontier_to_goal_dist = (toVec3(grid_.point(v_frontier)) - toVec3(grid_.point(v_goal))).norm();
+          Value euclidean_frontier_to_goal_dist = (toVec3(current_grid.point(v_frontier)) - toVec3(current_grid.point(v_goal))).norm();
           if (euclidean_frontier_to_goal_dist < euclidean_dist_to_goal) {
             RCLCPP_INFO(nh_->get_logger(), "frontier set as temporary goal with dist to goal %f", euclidean_frontier_to_goal_dist);
             v1 = v_frontier;
@@ -831,11 +893,12 @@ public:
           v1 = v_frontier;
         }
       } 
+    RCLCPP_WARN(nh_->get_logger(),"I");
 
     } else { // Dijkstra
       // If planning for a given goal, return path to the closest reachable
       // point from the goal.
-      t_part.reset();
+      t_partf.reset();
       Vec3 p1 = toVec3(goal.pose.position);
       p1.z() = 0.f;
       
@@ -849,7 +912,7 @@ public:
       //     continue;
       //   }
         
-      //   Value dist = (toVec3(grid_.point(*vi)) - p1).norm();
+      //   Value dist = (toVec3(current_grid.point(*vi)) - p1).norm();
       //   if (dist < best_dist) {
       //     v1 = *vi;
       //     best_dist = dist;
@@ -857,12 +920,12 @@ public:
       // }
 
 
-      for (VertexId v = 0; v < grid_.size(); ++v) {
+      for (VertexId v = 0; v < current_grid.size(); ++v) {
         if (!std::isfinite(sp->pathCost(v))) {
           continue;
         }
         
-        Value dist = (toVec3(grid_.point(v)) - p1).norm();
+        Value dist = (toVec3(current_grid.point(v)) - p1).norm();
         if (dist < best_dist) {
           v1 = v;
           best_dist = dist;
@@ -873,31 +936,30 @@ public:
     if (v1 == INVALID_VERTEX) {
       RCLCPP_ERROR(nh_->get_logger(),
       "No feasible path towards %s was found (%.6f, %.3f s).",
-      format(p1).c_str(), t_part.seconds_elapsed(),
+      format(p1).c_str(), t_partf.seconds_elapsed(),
       t.seconds_elapsed());
       return false;
     }
 
-    RCLCPP_WARN(nh_->get_logger(),"v0 %u x %f y %f start", v0, grid_.point(v0).x, grid_.point(v0).y);
-    RCLCPP_WARN(nh_->get_logger(),"v1 %u x %f y %f goal ", v1, grid_.point(v1).x, grid_.point(v1).y);
+    RCLCPP_WARN(nh_->get_logger(),"v0 %u x %f y %f start", v0, current_grid.point(v0).x, current_grid.point(v0).y);
+    RCLCPP_WARN(nh_->get_logger(),"v1 %u x %f y %f goal ", v1, current_grid.point(v1).x, current_grid.point(v1).y);
 
-    auto path_vertices = tracePathVertices(v0, v1, sp->predecessors());
+    auto path_vertices = tracePathVertices(v0, v1, sp->predecessors(), nh_);
+    RCLCPP_WARN(nh_->get_logger(),"J");
     nav_msgs::msg::Path local_plan;
     local_plan.header.frame_id = map_frame_;
     local_plan.header.stamp = nh_->get_clock()->now();
     local_plan.poses.push_back(start);
-    appendPath(path_vertices, grid_, local_plan);
+    appendPath(path_vertices, current_grid, local_plan);
     // helhest 01/2026: add the actual goal point to the end of the path for goal checker down the path
-    local_plan.poses.push_back(goal);
+    // local_plan.poses.push_back(goal);
     
-    res->plan = local_plan;
-
     RCLCPP_INFO(nh_->get_logger(),
                 "Path with %lu poses toward goal %s planned (%.3f s).",
-                res->plan.poses.size(), format(p1).c_str(),
+                local_plan.poses.size(), format(p1).c_str(),
                 t.seconds_elapsed());
+    path = local_plan;
     return true;
-  
   }
 
   void fillMapCloud(sensor_msgs::msg::PointCloud2 &cloud, const Grid &grid,
@@ -909,29 +971,29 @@ public:
     append_field<float>("cost", 1, cloud);
     append_field<float>("path_cost", 1, cloud);
     append_field<float>("f_value", 1, cloud);
-    resize_cloud(cloud, 1, grid_.size());
+    resize_cloud(cloud, 1, grid.size());
 
     sensor_msgs::PointCloud2Iterator<float> x_it(cloud, "x");
     sensor_msgs::PointCloud2Iterator<float> cost_it(cloud, "cost");
     sensor_msgs::PointCloud2Iterator<float> path_cost_it(cloud, "path_cost");
     sensor_msgs::PointCloud2Iterator<float> f_values_it(cloud, "f_value");
-    for (VertexId v = 0; v < grid_.size();
+    for (VertexId v = 0; v < grid.size();
          ++v, ++x_it, ++cost_it, ++path_cost_it, ++f_values_it) {
-      const auto p = grid_.point(v);
+      const auto p = grid.point(v);
       x_it[0] = p.x;
       x_it[1] = p.y;
       x_it[2] = 0.f;
-      cost_it[0] = grid_.costs(v).total();
+      cost_it[0] = grid.costs(v).total();
       path_cost_it[0] = path_costs[v];
       f_values_it[0] = f_values[v];
     }
   }
 
-  void createAndPublishMapCloud(const std::shared_ptr<ShortestPaths> sp) {
+  void createAndPublishMapCloud(const std::shared_ptr<ShortestPaths> sp, const Grid &grid) {
     sensor_msgs::msg::PointCloud2 cloud;
     cloud.header.frame_id = map_frame_;
     cloud.header.stamp = nh_->get_clock()->now();
-    fillMapCloud(cloud, grid_, sp->pathCosts(), sp->fValues());
+    fillMapCloud(cloud, grid, sp->pathCosts(), sp->fValues());
     map_pub_->publish(cloud);
   }
   
@@ -989,13 +1051,13 @@ public:
     return origin;
   }
 
-  void createAndPublishMapOccupancyGrid(const geometry_msgs::msg::Pose &start) {
+  void createAndPublishMapOccupancyGrid(const geometry_msgs::msg::Pose &start, float cell_size) {
     nav_msgs::msg::OccupancyGrid occ_grid;
     occ_grid.header.frame_id = map_frame_;
     auto now = nh_->get_clock()->now();
     occ_grid.header.stamp = now;
     occ_grid.info.map_load_time = now;
-    occ_grid.info.resolution = grid_.cellSize();
+    occ_grid.info.resolution = cell_size;
     occ_grid.info.width = occupancy_grid_w_;
     occ_grid.info.height = occupancy_grid_h_;
     
@@ -1009,11 +1071,168 @@ public:
   bool planSafe(nav_msgs::srv::GetPlan::Request::SharedPtr req,
                 nav_msgs::srv::GetPlan::Response::SharedPtr res) {
     try {
-      return plan(req, res);
+      return computePlanReq(req, res);
     } catch (const tf2::TransformException &ex) {
       RCLCPP_ERROR(nh_->get_logger(), "Transform failed: %s.", ex.what());
       return false;
     }
+  }
+
+  void computePlan() {
+    auto start_time = nh_->now();
+
+    // Initialize the ComputePathToPose goal and result
+    auto goal = actionServer->get_current_goal();
+    auto result = std::make_shared<ComputePathAction::Result>();
+    RCLCPP_INFO(nh_->get_logger(), "Computing path to goal.");
+
+    geometry_msgs::msg::PoseStamped start_pose;
+
+    try {
+      if (actionServer == nullptr || !actionServer->is_server_active()) {
+        RCLCPP_WARN(nh_->get_logger(), "Action server unavailable or inactive. Stopping.");
+        return;
+      } else if (actionServer->is_cancel_requested()) {
+        RCLCPP_INFO(nh_->get_logger(), "Goal was canceled. Canceling planning action.");
+        actionServer->terminate_all();
+        return;
+      }
+      // RCLCPP_INFO(nh_->get_logger(), "000.");
+
+      if (actionServer->is_preempt_requested()) {
+        goal = actionServer->accept_pending_goal();
+      }
+      // RCLCPP_INFO(nh_->get_logger(), "001.");
+
+      // For start pose use current robot pose
+      bool success = nav2_util::getCurrentPose(
+        start_pose, *tf_,
+        map_frame_, robot_frame_, 0.1);
+      if (!success) {
+        throw nav2_core::PlannerTFError("Unable to get start pose");
+      }
+      // Transform goal into the global frame
+      geometry_msgs::msg::PoseStamped goal_pose = goal->goal;
+      // RCLCPP_INFO(nh_->get_logger(), "002.");
+
+      if (goal_pose.header.frame_id == "") {
+        throw nav2_core::PlannerTFError("Goal pose has no frame. Please fill out header.frame_id.");
+      }
+
+      if (goal_pose.header.frame_id != map_frame_) {
+        bool success = nav2_util::transformPoseInTargetFrame(
+          goal_pose, goal_pose, *tf_,
+          map_frame_, 0.1);
+        if (!success) {
+          throw nav2_core::PlannerTFError("Unable to transform poses to global frame");
+        }
+      }
+      // RCLCPP_INFO(nh_->get_logger(), "003.");
+
+      auto cancel_checker = [this]() {
+        return actionServer->is_cancel_requested();
+      };
+      //TODO Make use of planner_id, cancel_checker (see nav2 planner_server.cpp).
+
+      RCLCPP_INFO(
+        nh_->get_logger(), "Attempting to a find path from (%.2f, %.2f) to "
+        "(%.2f, %.2f).", start_pose.pose.position.x, start_pose.pose.position.y,
+        goal_pose.pose.position.x, goal_pose.pose.position.y
+      );
+
+      nav_msgs::msg::Path path;
+      if (plan(start_pose, goal_pose, path))
+        result->path = path;
+
+      if (result->path.poses.empty()) {
+        RCLCPP_WARN(
+          nh_->get_logger(), "Planning algorithm %s failed to generate a valid"
+          " path to (%.2f, %.2f)", goal->planner_id.c_str(),
+          goal_pose.pose.position.x, goal_pose.pose.position.y);
+        throw nav2_core::NoValidPathCouldBeFound(goal->planner_id + " generated a empty path");
+
+      } else {
+        RCLCPP_INFO(
+          nh_->get_logger(),
+          "Found valid path of size %zu to (%.2f, %.2f)",
+          result->path.poses.size(), goal_pose.pose.position.x,
+          goal_pose.pose.position.y);        
+      }
+
+      // Publish the plan for visualization purposes
+      auto msg = std::make_unique<nav_msgs::msg::Path>(result->path);
+      path_pub_->publish(std::move(msg));
+
+      auto cycle_duration = nh_->now() - start_time;
+      result->planning_time = cycle_duration;
+
+      // if (max_planner_duration_ && cycle_duration.seconds() > max_planner_duration_) {
+      //   RCLCPP_WARN(
+      //     nh_->get_logger(),
+      //     "Planner loop missed its desired rate of %.4f Hz. Current loop rate is %.4f Hz",
+      //     1 / max_planner_duration_, 1 / cycle_duration.seconds());
+      // }
+      actionServer->succeeded_current(result);
+    } catch (nav2_core::InvalidPlanner & ex) {
+      exceptionWarning(start_pose, goal->goal, goal->planner_id, ex, result->error_msg);
+      result->error_code = ComputePathAction::Result::INVALID_PLANNER;
+      actionServer->terminate_current(result);
+    } catch (nav2_core::StartOccupied & ex) {
+      exceptionWarning(start_pose, goal->goal, goal->planner_id, ex, result->error_msg);
+      result->error_code = ComputePathAction::Result::START_OCCUPIED;
+      actionServer->terminate_current(result);
+    } catch (nav2_core::GoalOccupied & ex) {
+      exceptionWarning(start_pose, goal->goal, goal->planner_id, ex, result->error_msg);
+      result->error_code = ComputePathAction::Result::GOAL_OCCUPIED;
+      actionServer->terminate_current(result);
+    } catch (nav2_core::NoValidPathCouldBeFound & ex) {
+      exceptionWarning(start_pose, goal->goal, goal->planner_id, ex, result->error_msg);
+      result->error_code = ComputePathAction::Result::NO_VALID_PATH;
+      actionServer->terminate_current(result);
+    } catch (nav2_core::PlannerTimedOut & ex) {
+      exceptionWarning(start_pose, goal->goal, goal->planner_id, ex, result->error_msg);
+      result->error_code = ComputePathAction::Result::TIMEOUT;
+      actionServer->terminate_current(result);
+    } catch (nav2_core::StartOutsideMapBounds & ex) {
+      exceptionWarning(start_pose, goal->goal, goal->planner_id, ex, result->error_msg);
+      result->error_code = ComputePathAction::Result::START_OUTSIDE_MAP;
+      actionServer->terminate_current(result);
+    } catch (nav2_core::GoalOutsideMapBounds & ex) {
+      exceptionWarning(start_pose, goal->goal, goal->planner_id, ex, result->error_msg);
+      result->error_code = ComputePathAction::Result::GOAL_OUTSIDE_MAP;
+      actionServer->terminate_current(result);
+    } catch (nav2_core::PlannerTFError & ex) {
+      exceptionWarning(start_pose, goal->goal, goal->planner_id, ex, result->error_msg);
+      result->error_code = ComputePathAction::Result::TF_ERROR;
+      actionServer->terminate_current(result);
+    } catch (nav2_core::PlannerCancelled &) {
+      result->error_msg = "Goal was canceled. Canceling planning action.";
+      RCLCPP_INFO(nh_->get_logger(), result->error_msg.c_str());
+      actionServer->terminate_all();
+    } catch (std::exception & ex) {
+      exceptionWarning(start_pose, goal->goal, goal->planner_id, ex, result->error_msg);
+      result->error_code = ComputePathAction::Result::UNKNOWN;
+      actionServer->terminate_current(result);
+    }
+  }
+
+  void exceptionWarning(
+    const geometry_msgs::msg::PoseStamped & start,
+    const geometry_msgs::msg::PoseStamped & goal,
+    const std::string & planner_id,
+    const std::exception & ex,
+    std::string & error_msg)
+  {
+    std::stringstream ss;
+    ss << std::fixed << std::setprecision(2)
+      << planner_id << "plugin failed to plan from ("
+      << start.pose.position.x << ", " << start.pose.position.y
+      << ") to ("
+      << goal.pose.position.x << ", " << goal.pose.position.y << ")"
+      << ": \"" << ex.what() << "\"";
+
+    error_msg = ss.str();
+    RCLCPP_WARN(nh_->get_logger(), error_msg.c_str());
   }
 
   bool requestPlan(nav_msgs::srv::GetPlan::Request::SharedPtr req,
@@ -1027,11 +1246,13 @@ public:
 
   void clearMap(nav2_msgs::srv::ClearEntireCostmap::Request::SharedPtr req,
                 nav2_msgs::srv::ClearEntireCostmap::Response::SharedPtr res) {
+    std::lock_guard<std::mutex> lock(mtx_);
     grid_.clear();
     RCLCPP_WARN(nh_->get_logger(), "Map cleared.");
   }
 
   void clearAdHocLayer() {
+    std::lock_guard<std::mutex> lock(mtx_);
     if (adhoc_layer_ < 0 || adhoc_layer_ >= 4) {
       return;
     }
@@ -1042,6 +1263,7 @@ public:
   }
 
   void applySidelobesCosts(const Vec3 &robot_pos, float robot_yaw) {
+    std::lock_guard<std::mutex> lock(mtx_);
     if (adhoc_layer_ < 0 || adhoc_layer_ >= 4) {
       return;
     }
@@ -1090,6 +1312,11 @@ public:
   void receiveCloud(
       const std::shared_ptr<const sensor_msgs::msg::PointCloud2> &input,
       int i) {
+
+    // {
+    //   std::lock_guard<std::mutex> lock(mtx_);
+    //   grid_.clear();
+    // }
     const auto age = (nh_->get_clock()->now() - input->header.stamp).seconds();
     if (age > max_cloud_age_) {
       RCLCPP_INFO(nh_->get_logger(),
@@ -1121,25 +1348,29 @@ public:
       }
     }
 
-    for (int i = 0; i < input->height * input->width; ++i, ++x_it) {
-      Vec3 p(x_it[0], x_it[1], x_it[2]);
-      p = transform * p;
-      for (int j = 0; j < levels.size(); ++j) {
-        if (std::isfinite(cost_iters[j][0])) {
-          grid_.updatePointCost({p.x(), p.y()}, levels[j],
-                                weights[j] * cost_iters[j][0]);
+    float cell_size = grid_.cellSize();
+    {
+      std::lock_guard<std::mutex> lock(mtx_);
+
+      for (int i = 0; i < input->height * input->width; ++i, ++x_it) {
+        Vec3 p(x_it[0], x_it[1], x_it[2]);
+        p = transform * p;
+        for (int j = 0; j < levels.size(); ++j) {
+          if (std::isfinite(cost_iters[j][0])) {
+            grid_.updatePointCost({p.x(), p.y()}, levels[j],
+                                  weights[j] * cost_iters[j][0]);
+          }
+          ++cost_iters[j];
         }
-        ++cost_iters[j];
       }
-    }
-    
+    }    
     geometry_msgs::msg::PoseStamped current_robot_pose;
     const auto tf =
       tf_->lookupTransform(map_frame_, robot_frame_, rclcpp::Time(0), rclcpp::Duration::from_seconds(tf_timeout_));
     transform_to_pose(tf, current_robot_pose);
 
     if(publish_occupancy_grid_) {
-      createAndPublishMapOccupancyGrid(current_robot_pose.pose);
+      createAndPublishMapOccupancyGrid(current_robot_pose.pose, cell_size);
     }
   }
 
@@ -1164,6 +1395,8 @@ public:
   }
 
 protected:
+  using ComputePathAction = nav2_msgs::action::ComputePathToPose;
+
   rclcpp::Node::SharedPtr nh_;
   rclcpp::TimerBase::SharedPtr planning_timer_;
 
@@ -1206,6 +1439,9 @@ protected:
   nav_msgs::srv::GetPlan::Request::SharedPtr last_request_;
   rclcpp::Service<nav2_msgs::srv::ClearEntireCostmap>::SharedPtr
       clear_map_service_;
+  std::unique_ptr<nav2_util::SimpleActionServer<ComputePathAction>> actionServer;
+  std::mutex mtx_;
+
 
   // Input
   std::string position_field_{"x"};
