@@ -199,6 +199,25 @@ public:
 
     default_costs_ = nh_->declare_parameter<std::vector<float>>("default_costs",
                                                                 default_costs);
+
+    // Per-cost-field threshold: a point is only added to the grid for cost
+    // field j if its value is strictly greater than min_cloud_values_[j].
+    // Defaults to -inf (no filtering). Useful e.g. for binary segmentation
+    // clouds where we only want to keep obstacle points (value > 0).
+    std::vector<double> min_cloud_values(
+        cost_fields_.size(), -std::numeric_limits<double>::infinity());
+    min_cloud_values_ = nh_->declare_parameter<std::vector<double>>(
+        "min_cloud_values", min_cloud_values);
+
+    // Per-cost-field obstacle inflation radius in meters. For an above-threshold
+    // (obstacle) point in cost field j, its cost is also stamped onto every
+    // neighbouring cell whose center lies within inflation_radius_[j]. Defaults
+    // to 0 (disabled). Intended for binary semantic segmentation clouds; leave
+    // at 0 for the continuous geometric traversability layer.
+    std::vector<double> inflation_radius(cost_fields_.size(), 0.0);
+    inflation_radius_ = nh_->declare_parameter<std::vector<double>>(
+        "inflation_radius", inflation_radius);
+
     grid_ = Grid(cell_size_, forget_factor, default_costs_);
 
     planning_freq_ =
@@ -1122,7 +1141,7 @@ v1 = getCheapestFrontier(sp, p0, p1, frontier_min_dist_, frontier_max_neighbors_
       if (goal_pose.header.frame_id != map_frame_) {
         bool success = nav2_util::transformPoseInTargetFrame(
           goal_pose, goal_pose, *tf_,
-          map_frame_, 0.1);
+          map_frame_, 1.0);
         if (!success) {
           throw nav2_core::PlannerTFError("Unable to transform poses to global frame");
         }
@@ -1309,6 +1328,30 @@ v1 = getCheapestFrontier(sp, p0, p1, frontier_min_dist_, frontier_max_neighbors_
                 map_frame_.c_str(), t.seconds_elapsed());
   }
 
+  // Stamp 'cost' onto every cell (other than the one containing 'p') whose
+  // center lies within 'radius' meters of 'p', creating cells as needed. Used
+  // to inflate binary segmentation obstacles.
+  void inflateObstacle(const Point2f &p, int level, Cost cost, double radius) {
+    const Cell c0 = grid_.pointToCell(p);
+    const int n = static_cast<int>(std::ceil(radius / cell_size_));
+    const double radius_sq = radius * radius;
+    for (int dy = -n; dy <= n; ++dy) {
+      for (int dx = -n; dx <= n; ++dx) {
+        if (dx == 0 && dy == 0) {
+          continue; // center cell already handled by the caller
+        }
+        const Cell c(c0.x + dx, c0.y + dy);
+        const Point2f cp = grid_.cellToPoint(c);
+        const double ddx = cp.x - p.x;
+        const double ddy = cp.y - p.y;
+        if (ddx * ddx + ddy * ddy > radius_sq) {
+          continue;
+        }
+        grid_.updateCellCost(c, level, cost);
+      }
+    }
+  }
+
   void receiveCloud(
       const std::shared_ptr<const sensor_msgs::msg::PointCloud2> &input,
       int i) {
@@ -1335,12 +1378,19 @@ v1 = getCheapestFrontier(sp, p0, p1, frontier_min_dist_, frontier_max_neighbors_
 
     std::vector<uint8_t> levels;
     std::vector<uint8_t> weights;
+    std::vector<double> min_values;
+    std::vector<double> inflation_radii;
     std::vector<sensor_msgs::PointCloud2ConstIterator<float>> cost_iters;
 
     for (int j = 0; j < cost_fields_.size(); ++j) {
       if (which_cloud_[j] == i) {
         levels.push_back(j < cloud_levels_.size() ? cloud_levels_[j] : j);
         weights.push_back(j < cloud_weights_.size() ? cloud_weights_[j] : 1.0);
+        min_values.push_back(j < min_cloud_values_.size()
+                                 ? min_cloud_values_[j]
+                                 : -std::numeric_limits<double>::infinity());
+        inflation_radii.push_back(
+            j < inflation_radius_.size() ? inflation_radius_[j] : 0.0);
         const std::string cost_field =
             j < cost_fields_.size() ? cost_fields_[j] : "cost";
         cost_iters.push_back(
@@ -1356,9 +1406,28 @@ v1 = getCheapestFrontier(sp, p0, p1, frontier_min_dist_, frontier_max_neighbors_
         Vec3 p(x_it[0], x_it[1], x_it[2]);
         p = transform * p;
         for (int j = 0; j < levels.size(); ++j) {
-          if (std::isfinite(cost_iters[j][0])) {
-            grid_.updatePointCost({p.x(), p.y()}, levels[j],
-                                  weights[j] * cost_iters[j][0]);
+          const float value = cost_iters[j][0];
+          // Non-finite values (e.g. NaN "no reading") are always ignored.
+          if (std::isfinite(value)) {
+            // The threshold only gates *creation* of new cells: an at/below
+            // threshold value (e.g. traversable=0 in a binary segmentation
+            // cloud) is applied to a cell that already exists, but never seeds
+            // a new one. Above-threshold values create the cell as needed.
+            // updatePointCost touches only this level, so other cost fields of
+            // the same cell are left untouched.
+            if (value > min_values[j] ||
+                grid_.hasCell(grid_.pointToCell({p.x(), p.y()}))) {
+              grid_.updatePointCost({p.x(), p.y()}, levels[j],
+                                    weights[j] * value);
+            }
+            // Inflate obstacles: above-threshold points also stamp their cost
+            // onto neighbouring cells within inflation_radii[j] (meters), seeding
+            // new cells as needed. Disabled (0) by default and for the geometric
+            // traversability layer.
+            if (value > min_values[j] && inflation_radii[j] > 0.0) {
+              inflateObstacle({p.x(), p.y()}, levels[j], weights[j] * value,
+                              inflation_radii[j]);
+            }
           }
           ++cost_iters[j];
         }
@@ -1449,6 +1518,10 @@ protected:
   std::vector<long int> which_cloud_;
   std::vector<double> cloud_weights_;
   std::vector<int> cloud_levels_;
+  // Per-cost-field minimum value; points with value <= threshold are ignored.
+  std::vector<double> min_cloud_values_;
+  // Per-cost-field obstacle inflation radius in meters; 0 disables inflation.
+  std::vector<double> inflation_radius_;
   float max_cloud_age_{5.0};
   float input_range_{10.0};
   float cell_size_{1.0};

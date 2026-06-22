@@ -30,8 +30,27 @@ def generate_launch_description():
                         "input_range": 5.0,
                         "cell_size": 0.6,
                         "forget_factor": 1.0,
-                        "cost_fields": ["traversability"],
-                        "which_cloud": [0],
+                        "cost_fields": ["traversability", "semantic_cost"],
+                        "which_cloud": [0, 0],
+
+                        # Per-cost-field threshold (parallel to cost_fields).
+                        # A point is only added to the grid for a cost field if its
+                        # value is strictly greater than the corresponding threshold.
+                        # Use -inf (default) to keep every point. E.g. for a binary
+                        # segmentation cloud, set 0.0 to only keep obstacle points (>0).
+                        "min_cloud_values": [
+                            float("-inf"),float("0.5"),
+                        ],
+
+                        # Per-cost-field obstacle inflation radius in meters
+                        # (parallel to cost_fields). For an above-threshold
+                        # (obstacle) point, its cost is also stamped onto every
+                        # neighbouring cell within this radius. 0.0 disables it.
+                        # Keep 0.0 for the continuous geometric layer; set a
+                        # positive value only for a binary segmentation cloud.
+                        "inflation_radius": [
+                            0.0, 0.0
+                        ],
 
                         # Don't forget that cloud_weights are not relative, becuase in the planner they are combined
                         # with the euclidean length of the edge in meters.
@@ -40,19 +59,19 @@ def generate_launch_description():
                         # So we are saying that the path along this edge is equal to finding a different route to the same goal point
                         # of length 5 meters and with 0 cost.
                         "cloud_weights": [
-                            1.0,
+                            1.0, 0.5
                         ],  # BEST RUN WAS WITH [1.0, 2.0, 10.0]
                         "max_costs_relative": [
-                            0.7,
+                            0.7, 2.0
                         ],
                         "default_costs": [   # Careful that these are never multiplied by the cloud_weights!!!
-                            0.5
+                            0.5, 0.0
                         ],
                         "neighborhood": 8,
                         "min_path_cost": 1.0,
                         "planning_freq": 1.0,
                         "plan_from_goal_dist": 2.0,
-                        "num_input_clouds": 1,
+                        "num_input_clouds": 2,
                         "input_queue_size": 2,
                         "start_on_request": True,
                         "stop_on_goal": True,
@@ -71,7 +90,8 @@ def generate_launch_description():
                 ],
                 remappings=[
                     #("input_cloud_0", "osm_grid"),
-                    ("input_cloud_0", "terrain_map"),
+                    # ("input_cloud_0", "terrain_map"),
+                    ("input_cloud_0", "traversability_cloud"),
                     ("map_occupancy_grid", "naex/map_occupancy_grid"),
                 ],
             )
