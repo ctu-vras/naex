@@ -197,6 +197,11 @@ public:
       }
     }
 
+    // sensor_range_ = nh_->declare_parameter<float>("sensor_range", sensor_range_);
+    // near_unexplored_cost_ = nh_->declare_parameter<float>("near_unexplored_cost", near_unexplored_cost_);
+    // distant_unexplored_cost_ = nh_->declare_parameter<float>("distant_unexplored_cost", distant_unexplored_cost_);
+    frontier_dist_from_goal_cost_ = nh_->declare_parameter<float>("frontier_dist_from_goal_cost", frontier_dist_from_goal_cost_);
+
     default_costs_ = nh_->declare_parameter<std::vector<float>>("default_costs",
                                                                 default_costs);
 
@@ -481,7 +486,7 @@ public:
       if (deg <= max_neighbors) {
         auto p = full_graph.grid().point(v);
         frontiers_grid.createCell(frontiers_grid.pointToCell(p));
-        frontier_costs.push_back(astar_sp->fValue(v));
+        frontier_costs.push_back(astar_sp->pathCost(v) + (astar_sp->fValue(v) - astar_sp->pathCost(v)) * frontier_dist_from_goal_cost_); // This is a stupid way to get the distance from the goal... 
         traversable.push_back(is_traversable);
       }
     }
@@ -1534,6 +1539,11 @@ protected:
   Costs max_costs_relative_;
   Costs max_costs_absolute_;
   Costs default_costs_;
+
+  // float sensor_range_{5.0};
+  // float near_unexplored_cost_{0.5};
+  // float distant_unexplored_cost_{1.0};
+  float frontier_dist_from_goal_cost_{1.5};
 
   // Planning
   // Re-planning frequency, repeating the last request if positive.

@@ -67,6 +67,14 @@ def generate_launch_description():
                         "default_costs": [   # Careful that these are never multiplied by the cloud_weights!!!
                             0.5, 0.0
                         ],
+                        # "sensor_range": 5.0, # used to distinguish near and distant unexplored vertices
+                        # "near_unexplored_cost": 0.5,    # keep between 0-1
+                        # "distant_unexplored_cost": 1.0, # keep between 0-1
+
+                        # Used for finding the best frontier as temporary goal. The cost of the frontier is:
+                        # the AStar cost of getting there + euxlidean_dist_to_goal * frontier_dist_from_goal_cost
+                        "frontier_dist_from_goal_cost": 1.5,
+
                         "neighborhood": 8,
                         "min_path_cost": 1.0,
                         "planning_freq": 1.0,
