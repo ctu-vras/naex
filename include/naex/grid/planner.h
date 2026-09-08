@@ -297,7 +297,8 @@ public:
     tf_ = std::make_shared<tf2_ros::Buffer>(nh_->get_clock());
     tf_sub_ = std::make_shared<tf2_ros::TransformListener>(*tf_);
 
-    map_pub_ = nh_->create_publisher<sensor_msgs::msg::PointCloud2>("map", 2);
+    map_pub_ = nh_->create_publisher<sensor_msgs::msg::PointCloud2>(
+        "map", rclcpp::QoS(1).transient_local());
     local_map_pub_ =
         nh_->create_publisher<sensor_msgs::msg::PointCloud2>("local_map", 2);
     path_pub_ = nh_->create_publisher<nav_msgs::msg::Path>("path", 2);
