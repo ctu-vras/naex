@@ -96,6 +96,7 @@ tested as *f* > 1e9 and not with `isfinite` after an A\* run
 | `max_relative_dist_to_goal` | double | 2.0 |
 | `frontier_dist_from_goal_cost` | double | 1.0 (weight of a frontier's euclidean distance to the goal in its score; 1.0 reproduces the plain A\* *f* value, higher penalizes a frontier further from the goal more) |
 | `max_start_to_traversable_dist` | double | 2.0 m |
+| `append_goal_pose` | bool | true (append the requested goal as the last pose of a searched path; the straight-line fallback always has exactly two poses regardless) |
 | `publish_occupancy_grid` | bool | true |
 | `occupancy_grid_w`, `occupancy_grid_h` | int | 500 (cells; resolution is `cell_size`) |
 | `planning_freq` | double | 1.0 (Hz; <= 0 disables re-planning) |
@@ -222,9 +223,11 @@ time spent in these lookups is the `tf=` field of `perf plan:`.
   with `transient_local` QoS (depth 1), so a subscriber that joins after the
   last publish still gets that one cycle instead of nothing.
 - `path` [[nav_msgs/msg/Path](https://docs.ros2.org/latest/api/nav_msgs/msg/Path.html)] — planned path.
-  The first pose is the start pose of the request and the last one is the
-  requested goal, so a goal checker downstream sees the real goal even when the
-  path ends at a frontier.
+  The first pose is the start pose of the request; with `append_goal_pose`
+  (the default) the last one is the requested goal, so a goal checker
+  downstream sees the real goal even when the search itself stopped at a
+  frontier. With `append_goal_pose: false` the path ends at the last searched
+  cell instead.
 - `planning_freq` [std_msgs/msg/Float32] — the frequency the planner replans at.
 - `map_occupancy_grid` [[nav_msgs/msg/OccupancyGrid](https://docs.ros2.org/latest/api/nav_msgs/msg/OccupancyGrid.html)]
   — `occupancy_grid_w` x `occupancy_grid_h` cells of `cell_size`, centred on

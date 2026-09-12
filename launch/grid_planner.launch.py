@@ -93,6 +93,10 @@ def generate_launch_description():
                         "start_on_request": True,
                         "stop_on_goal": True,
                         "goal_reached_dist": 0.5,
+                        # Append the requested goal pose as the last pose of a
+                        # searched path, for a downstream goal checker; this is
+                        # the default, spelled out here explicitly.
+                        "append_goal_pose": True,
                         # Ad-hoc cost parameters.
                         "adhoc_costs": ["sidelobes"],
                         "adhoc_layer": 3,

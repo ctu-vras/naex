@@ -446,6 +446,12 @@ protected:
   /// plan a straight line to the goal instead (this should only happen with
   /// navigate-through-poses, where the start need not be the robot).
   float max_start_to_traversable_dist_{2.0};
+  /// If true (the default, unchanged helhest behaviour), the searched path
+  /// gets the requested goal pose appended as its last pose, so a downstream
+  /// goal checker sees the real goal even when the search itself stopped at
+  /// a frontier. husky/taros set this false. The straight-line fallback
+  /// (return_straight_line_plan()) always has exactly two poses regardless.
+  bool append_goal_pose_{true};
 
   // Ad-hoc costs
   std::vector<std::string> adhoc_costs_{};

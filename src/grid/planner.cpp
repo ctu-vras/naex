@@ -179,6 +179,8 @@ Planner::Planner(rclcpp::Node::SharedPtr nh) : nh_(nh) {
       nh_->declare_parameter<float>("goal_reached_dist", goal_reached_dist_);
   max_start_to_traversable_dist_ = nh_->declare_parameter<float>(
       "max_start_to_traversable_dist", max_start_to_traversable_dist_);
+  append_goal_pose_ =
+      nh_->declare_parameter<bool>("append_goal_pose", append_goal_pose_);
 
   // max_costs_relative is changed at runtime as a recovery behaviour.  The
   // per-vertex cost cache of GraphN is rebuilt by every search, so nothing
@@ -922,9 +924,11 @@ bool Planner::plan(nav_msgs::srv::GetPlan::Request::SharedPtr req,
   local_plan.header.stamp = nh_->get_clock()->now();
   local_plan.poses.push_back(start);
   append_path(path_vertices, grid_, local_plan);
-  // helhest 01/2026: add the actual goal point to the end of the path for
-  // the goal checker down the path.
-  local_plan.poses.push_back(goal);
+  if (append_goal_pose_) {
+    // helhest 01/2026: add the actual goal point to the end of the path for
+    // the goal checker down the path.
+    local_plan.poses.push_back(goal);
+  }
   res->plan = std::move(local_plan);
 
   RCLCPP_INFO(nh_->get_logger(),
