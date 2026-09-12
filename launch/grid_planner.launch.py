@@ -31,10 +31,20 @@ def generate_launch_description():
                         "robot_frame": "base_link",
                         "max_cloud_age": 5.0,
                         # Cloud callbacks must never park the single-threaded
-                        # executor on TF (P5): drop the frame after ~1 cloud
-                        # period instead.  tf_timeout applies to the
-                        # once-per-cycle robot pose lookups only.
-                        "cloud_tf_timeout": 0.05,
+                        # executor on TF (P5), but the timeout still has to
+                        # cover one TF period: every drop seen in bag replay
+                        # was an "extrapolation into the future" by 1-6 ms
+                        # against a 10 Hz TF, i.e. a transform that was there
+                        # one period later.  0.2 = 2 TF periods.
+                        "cloud_tf_timeout": 0.2,
+                        # Timeout of every TF lookup on the get_plan path,
+                        # which runs on that same single thread.  All of them
+                        # are "latest available", so this only ever elapses
+                        # when TF is genuinely absent.
+                        "request_tf_timeout": 0.5,
+                        # Deprecated, unused; kept so that this file documents
+                        # the migration.  Setting it (to anything but 3.0)
+                        # still seeds request_tf_timeout.
                         "tf_timeout": 0.5,
                         # True subscribes to the input clouds with best-effort
                         # (sensor data) QoS; the default is reliable.

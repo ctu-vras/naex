@@ -74,8 +74,9 @@ tested as *f* > 1e9 and not with `isfinite` after an A\* run
 | `cloud_levels` | int[] | `[]` (cloud *i* into cost layer *i*) |
 | `map_frame` | string | `map` |
 | `robot_frame` | string | `base_footprint` |
-| `tf_timeout` | double | 3.0 (robot pose lookup in `plan()`) |
-| `cloud_tf_timeout` | double | 0.05 (per-cloud lookup; late clouds are dropped) |
+| `tf_timeout` | double | 3.0 (**deprecated**, unused; see below) |
+| `request_tf_timeout` | double | 0.5 (every TF lookup on the `get_plan` path) |
+| `cloud_tf_timeout` | double | 0.2 (per-cloud lookup; late clouds are dropped) |
 | `max_cloud_age` | double | 5.0 |
 | `input_range` | double | 10.0 (crop of the input cloud; <= 0 disables; clamped to `map_range` when the map is bounded) |
 | `map_range` | double | 0.0 (bound of the map; 0 = unbounded) |
@@ -190,12 +191,31 @@ map is then a function of *where* the robot is, not of *when* it was somewhere,
 so re-running the same trajectory at a different speed gives the same plan.
 
 The node spins on a single-threaded executor, so a blocking transform lookup in
-the cloud callback stalls the planning timer and the `get_plan` service as well.
-`cloud_tf_timeout` is therefore deliberately short: a cloud whose transform is
-not available within it is dropped (with a warning throttled to one per 2 s)
-instead of parked on. Raise it only if the log shows clouds being dropped while
-TF is healthy. `tf_timeout` is unrelated and still governs the single robot pose
-lookup per planning cycle.
+*any* callback stalls the planning timer, the cloud ingestion and the `get_plan`
+service alike. Both timeouts are therefore bounded well below a second.
+
+`cloud_tf_timeout` is the per-cloud one: a cloud whose transform is not
+available within it is dropped (with a warning throttled to one per 2 s)
+instead of parked on. It still has to cover one TF period — with the default
+0.05 every drop observed in bag replay was an "extrapolation into the future"
+by 1–6 ms against a 10 Hz TF, i.e. a transform that would have been there one
+period later — so the default is `0.2`, two periods of a 10 Hz TF. Raise it
+further only if the log still shows clouds being dropped while TF is healthy.
+
+`request_tf_timeout` bounds every TF lookup on the `get_plan`/`plan` path: the
+start and goal frame transforms, the robot pose lookup that replaces a NaN
+start, and the robot-frame check of the ad-hoc layer. All of them ask for the
+*latest available* transform (the request poses are stamped with zero time, not
+with `now()`, so the buffer is never asked for a transform it cannot have yet),
+so the timeout can only elapse when TF is genuinely absent — and then failing
+fast with a warning is what the caller wants, not a stalled node. The total
+time spent in these lookups is the `tf=` field of `perf plan:`.
+
+`tf_timeout` is **deprecated**: no lookup reads it any more. It is still
+declared so that older launch files load, and — because it used to be the only
+knob for the request path — setting it to anything other than its own default
+`3.0` seeds `request_tf_timeout` with that value. Setting `request_tf_timeout`
+explicitly always wins; a configuration that leaves both alone gets `0.5`.
 
 #### Subscribed topics
 

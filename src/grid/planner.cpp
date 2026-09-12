@@ -26,6 +26,28 @@
 namespace naex {
 namespace grid {
 
+namespace {
+
+/// Adds its lifetime to a PlanTimings field when it goes out of scope.
+///
+/// Used around the TF lookups of the request path: those are exactly the calls
+/// that can block for the whole timeout and then throw, and a plain
+/// "timer.seconds_elapsed() after the call" loses precisely that case -- the
+/// wait that matters most -- from the perf line.
+class ScopedTfTimer {
+public:
+  explicit ScopedTfTimer(double &sink) : sink_(sink) {}
+  ScopedTfTimer(const ScopedTfTimer &) = delete;
+  ScopedTfTimer &operator=(const ScopedTfTimer &) = delete;
+  ~ScopedTfTimer() { sink_ += timer_.seconds_elapsed(); }
+
+private:
+  Timer timer_;
+  double &sink_;
+};
+
+}  // namespace
+
 Planner::Planner(rclcpp::Node::SharedPtr nh) : nh_(nh) {
   // Invalid position invokes exploration mode.
   last_request_ = std::make_shared<nav_msgs::srv::GetPlan::Request>();
@@ -56,13 +78,31 @@ Planner::Planner(rclcpp::Node::SharedPtr nh) : nh_(nh) {
   map_frame_ = nh_->declare_parameter<std::string>("map_frame", map_frame_);
   robot_frame_ =
       nh_->declare_parameter<std::string>("robot_frame", robot_frame_);
+  // Deprecated: no lookup reads tf_timeout_ any more (the request path uses
+  // request_tf_timeout_, the cloud path cloud_tf_timeout_).  It stays declared
+  // so that older launch files still load, and it seeds request_tf_timeout_
+  // below.
+  const float tf_timeout_default = tf_timeout_;
   tf_timeout_ = nh_->declare_parameter<float>("tf_timeout", tf_timeout_);
   // Cloud callbacks run on the only executor thread, so a long wait here
   // stalls the planning timer and the get_plan service; drop the frame
-  // instead (P5).  Kept separate from tf_timeout_, which still governs the
-  // once-per-cycle robot pose lookup in plan().
+  // instead (P5).  It still has to cover one TF period: with a 10 Hz TF the
+  // replayed drops were "extrapolation into the future" by 1-6 ms, i.e. a
+  // transform that would have been there one period later.
   cloud_tf_timeout_ =
       nh_->declare_parameter<float>("cloud_tf_timeout", cloud_tf_timeout_);
+  // The get_plan callback runs on the same single executor thread, so the
+  // request path must not be able to park it for seconds either.  Every lookup
+  // it makes is "latest available" (see plan()), so it can only ever wait when
+  // TF is genuinely absent, and then failing fast is what the caller wants.
+  // Compatibility: a configuration that set tf_timeout to anything but its own
+  // default asked for a request-path timeout back when tf_timeout was the only
+  // knob, so inherit it unless request_tf_timeout is given explicitly.
+  if (tf_timeout_ != tf_timeout_default) {
+    request_tf_timeout_ = tf_timeout_;
+  }
+  request_tf_timeout_ =
+      nh_->declare_parameter<float>("request_tf_timeout", request_tf_timeout_);
 
   max_cloud_age_ =
       nh_->declare_parameter<float>("max_cloud_age", max_cloud_age_);
@@ -693,23 +733,38 @@ bool Planner::plan(nav_msgs::srv::GetPlan::Request::SharedPtr req,
                 start.header.frame_id.c_str(), goal.header.frame_id.c_str());
   }
   const std::string request_frame = req->start.header.frame_id;
-  start.header.stamp = nh_->now();
-  goal.header.stamp = nh_->now();
+  // Stamp with zero time (tf2::TimePointZero, "latest available") rather than
+  // with nh_->now(): a now() stamp asks the buffer for a transform it cannot
+  // have yet, so tf_->transform() blocks the single executor thread until TF
+  // catches up -- one TF period in the good case, the whole timeout on a TF
+  // dropout, and the frames of the request can be dynamic on the robot.  The
+  // request carries no usable stamp of its own (the goal topic publishes a
+  // zero stamp) and the robot-pose lookup below is already "latest", so
+  // "latest" is both the cheapest and the consistent choice.
+  const rclcpp::Time latest(0, 0, nh_->get_clock()->get_clock_type());
+  start.header.stamp = latest;
+  goal.header.stamp = latest;
 
-  if (!request_frame.empty() && request_frame != map_frame_) {
-    RCLCPP_WARN_THROTTLE(nh_->get_logger(), *nh_->get_clock(), 1000,
-                         "Start pose frame_id '%s' does not match map "
-                         "frame_id '%s'. Attempting to transform.",
-                         request_frame.c_str(), map_frame_.c_str());
-    start =
-        tf_->transform(start, map_frame_, tf2::durationFromSec(tf_timeout_));
-  }
-  if (!goal.header.frame_id.empty() && goal.header.frame_id != map_frame_) {
-    RCLCPP_WARN_THROTTLE(nh_->get_logger(), *nh_->get_clock(), 1000,
-                         "Goal pose frame_id '%s' does not match map "
-                         "frame_id '%s'. Attempting to transform.",
-                         goal.header.frame_id.c_str(), map_frame_.c_str());
-    goal = tf_->transform(goal, map_frame_, tf2::durationFromSec(tf_timeout_));
+  // Timed, so that a TF wait here shows up in the perf line instead of hiding
+  // outside the instrumented section.
+  {
+    ScopedTfTimer frame_tf_timer(plan_timings_.start_tf);
+    if (!request_frame.empty() && request_frame != map_frame_) {
+      RCLCPP_WARN_THROTTLE(nh_->get_logger(), *nh_->get_clock(), 1000,
+                           "Start pose frame_id '%s' does not match map "
+                           "frame_id '%s'. Attempting to transform.",
+                           request_frame.c_str(), map_frame_.c_str());
+      start = tf_->transform(start, map_frame_,
+                             tf2::durationFromSec(request_tf_timeout_));
+    }
+    if (!goal.header.frame_id.empty() && goal.header.frame_id != map_frame_) {
+      RCLCPP_WARN_THROTTLE(nh_->get_logger(), *nh_->get_clock(), 1000,
+                           "Goal pose frame_id '%s' does not match map "
+                           "frame_id '%s'. Attempting to transform.",
+                           goal.header.frame_id.c_str(), map_frame_.c_str());
+      goal = tf_->transform(goal, map_frame_,
+                            tf2::durationFromSec(request_tf_timeout_));
+    }
   }
 
   // If the start is not valid, use the robot position instead.
@@ -717,11 +772,12 @@ bool Planner::plan(nav_msgs::srv::GetPlan::Request::SharedPtr req,
   if (!isValid(start.pose.position)) {
     // tf2::TimePointZero ("latest available") avoids the clock-type
     // mismatch of rclcpp::Time(0) (system time) against a ROS-time buffer.
-    Timer t_tf;
-    const auto tf = tf_->lookupTransform(map_frame_, robot_frame_,
-                                         tf2::TimePointZero,
-                                         tf2::durationFromSec(tf_timeout_));
-    plan_timings_.start_tf = t_tf.seconds_elapsed();
+    geometry_msgs::msg::TransformStamped tf;
+    {
+      ScopedTfTimer start_tf_timer(plan_timings_.start_tf);
+      tf = tf_->lookupTransform(map_frame_, robot_frame_, tf2::TimePointZero,
+                                tf2::durationFromSec(request_tf_timeout_));
+    }
     transform_to_pose(tf, start);
     start.header.frame_id = map_frame_;
   }
@@ -766,12 +822,16 @@ bool Planner::plan(nav_msgs::srv::GetPlan::Request::SharedPtr req,
     // Make sure the start pose is close enough to the robot pose (it is not
     // with navigate-through-poses).  Not ideal, but it keeps the ad-hoc
     // banana from appearing where it should not.  This blocks for up to
-    // tf_timeout_, so it is reported as TF time and not as ad-hoc time.
-    Timer t_tf_robot;
-    const auto start_in_robot_frame =
-        tf_->transform(start, robot_frame_, tf2::durationFromSec(tf_timeout_));
-    const double tf_robot_seconds = t_tf_robot.seconds_elapsed();
-    plan_timings_.start_tf += tf_robot_seconds;
+    // request_tf_timeout_, so it is reported as TF time and not as ad-hoc
+    // time.
+    const double start_tf_before = plan_timings_.start_tf;
+    geometry_msgs::msg::PoseStamped start_in_robot_frame;
+    {
+      ScopedTfTimer robot_tf_timer(plan_timings_.start_tf);
+      start_in_robot_frame = tf_->transform(
+          start, robot_frame_, tf2::durationFromSec(request_tf_timeout_));
+    }
+    const double tf_robot_seconds = plan_timings_.start_tf - start_tf_before;
     if (std::fabs(start_in_robot_frame.pose.position.x) > 3. ||
         std::fabs(start_in_robot_frame.pose.position.y) > 3. ||
         std::fabs(start_in_robot_frame.pose.orientation.w) < 0.9) {
@@ -1214,7 +1274,7 @@ void Planner::receiveCloud(
     // Centred on the robot, not on the sensor.  The lookup runs in the
     // cloud callback, so it uses the short cloud_tf_timeout_ (P5) and the
     // latest available transform (B11) rather than blocking the only
-    // executor thread for tf_timeout_.
+    // executor thread for a request-path timeout.
     geometry_msgs::msg::PoseStamped robot_pose;
     const auto robot_to_map = tf_->lookupTransform(
         map_frame_, robot_frame_, tf2::TimePointZero,

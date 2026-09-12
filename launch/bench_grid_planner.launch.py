@@ -104,9 +104,13 @@ _ARGS = {
     # 0 keeps every measured cycle request-driven; > 0 also runs the planning
     # timer, which is what publishes the "path" topic the tf_gap run measures.
     "planning_freq": "0.0",
-    # Baseline values on purpose: the production launch file sets 0.5 / 0.05.
+    # tf_timeout is deprecated and unused; kept so that the benchmark still
+    # accepts it on the command line.  cloud_tf_timeout has to cover one TF
+    # period (the replayed drops were 1-6 ms of extrapolation into the future
+    # against a 10 Hz TF), request_tf_timeout bounds the get_plan path.
     "tf_timeout": "3.0",
-    "cloud_tf_timeout": "0.05",
+    "cloud_tf_timeout": "0.2",
+    "request_tf_timeout": "0.5",
 }
 
 
@@ -194,6 +198,9 @@ def generate_launch_description():
                 ),
                 "cloud_tf_timeout": ParameterValue(
                     cfg["cloud_tf_timeout"], value_type=float
+                ),
+                "request_tf_timeout": ParameterValue(
+                    cfg["request_tf_timeout"], value_type=float
                 ),
                 "input_range": ParameterValue(
                     cfg["input_range"], value_type=float

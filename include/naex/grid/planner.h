@@ -45,7 +45,10 @@ namespace grid {
 struct PlanTimings {
   /// Cells in the grid at the end of the cycle (P6 growth monitor).
   size_t grid_size{0};
-  /// TF lookup for the start pose (only when the request has no start).
+  /// TF on the get_plan path: the start/goal frame transforms, the robot
+  /// pose lookup (only when the request has no start) and the robot-frame
+  /// check of the ad-hoc layer.  Logged as tf= and bounded by
+  /// request_tf_timeout per lookup.
   double start_tf{0.0};
   /// Ad-hoc (sidelobes) cost clear + apply.
   double adhoc{0.0};
@@ -173,6 +176,10 @@ public:
    *   perf plan: cells=<N> map_range=<m> tf=<s> adhoc=<s> dijkstra=<s>
    *   map_cloud=<s> scan_trav=<s> scan_reach=<s> total=<s>
    *
+   * tf is the sum of every TF wait on the request path (start/goal frame
+   * transforms included), so a TF stall cannot hide outside the measured
+   * section.
+   *
    * map_range is the configured bound (0 = unbounded), repeated on every line
    * so that a bag says which regime "cells" was measured in (P6).
    */
@@ -299,12 +306,22 @@ protected:
   // Transforms and frames
   std::shared_ptr<tf2_ros::Buffer> tf_{};
   std::shared_ptr<tf2_ros::TransformListener> tf_sub_;
-  /// Timeout of the once-per-cycle robot pose lookup in plan().
+  /// Deprecated; no lookup uses it any more.  Kept declared so that launch
+  /// files written before request_tf_timeout_ existed still load, and it
+  /// seeds request_tf_timeout_ when it is set to anything but this default
+  /// (see the parameter declarations in the constructor).
   float tf_timeout_{3.0};
+  /// Timeout of every TF lookup on the get_plan/plan path; short on purpose,
+  /// see P5.  All of them are "latest available", so they can only wait when
+  /// TF is genuinely absent, and then failing fast beats parking the single
+  /// executor thread.
+  float request_tf_timeout_{0.5};
   /// Timeout of the per-cloud lookup in receiveCloud(); short on purpose, see
-  /// P5.  ~1 cloud period at 20 Hz, so a late transform drops one frame rather
+  /// P5.  It has to cover one TF period (0.2 s = 2 periods of a 10 Hz TF), so
+  /// that a transform that is merely a few ms into the future does not drop
+  /// the frame, but still short enough that a TF dropout drops frames rather
   /// than parking the single-threaded executor.
-  float cloud_tf_timeout_{0.05};
+  float cloud_tf_timeout_{0.2};
   std::string map_frame_{"map"};
   std::string robot_frame_{"base_footprint"};
 
