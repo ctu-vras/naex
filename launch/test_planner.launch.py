@@ -47,7 +47,6 @@ def generate_launch_description():
                         "start_on_request": False,
                         "stop_on_goal": True,
                         "goal_reached_dist": 0.5,
-                        "mode": 2,
                         # Ad-hoc cost parameters
                         "adhoc_costs": ["sidelobes"],
                         "adhoc_layer": 3,

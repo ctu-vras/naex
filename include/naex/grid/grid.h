@@ -63,13 +63,7 @@ template <> struct Point2Hasher<int16_t> {
   }
 };
 
-template struct Point2Hasher<float>;
-// No explicit instantiation of Point2Hasher<int16_t>: it is explicitly
-// specialized above.
-
-typedef Point2Hasher<float> Point2fHasher;
-typedef Point2Hasher<int16_t> Point2sHasher;
-typedef Point2sHasher CellHasher;
+typedef Point2Hasher<int16_t> CellHasher;
 
 struct Costs {
   /// Number of cost layers.
@@ -239,9 +233,6 @@ struct Eviction {
   bool changed() const { return removed != 0; }
 };
 
-// TODO: Move max costs and total to grid.
-// TODO: Add costs weights for total.
-// TODO: Add required flags for total.
 class Grid {
 public:
   Grid(float cell_size = 1.f, float forget_factor = 1.f,
@@ -269,10 +260,6 @@ public:
   }
 
   const Cell &cell(const CellId &id) const {
-    assert(id < size());
-    return id_to_cell_[id];
-  }
-  Cell &cell(const CellId &id) {
     assert(id < size());
     return id_to_cell_[id];
   }
@@ -315,7 +302,6 @@ public:
     return id_to_costs_[id];
   }
   Costs &cell_costs(const Cell &c) { return costs(cell_id(c)); }
-  Costs &point_costs(const Point2f &p) { return cell_costs(point_to_cell(p)); }
 
   /**
    * Blend @p cost into layer @p level of the cell already resolved to @p id.

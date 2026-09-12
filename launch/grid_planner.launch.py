@@ -40,10 +40,6 @@ def generate_launch_description():
                         # are "latest available", so this only ever elapses
                         # when TF is genuinely absent.
                         "request_tf_timeout": 0.5,
-                        # Deprecated, unused; kept so that this file documents
-                        # the migration.  Setting it (to anything but 3.0)
-                        # still seeds request_tf_timeout.
-                        "tf_timeout": 0.5,
                         # True subscribes to the input clouds with best-effort
                         # (sensor data) QoS; the default is reliable.
                         "sensor_data_qos": False,
@@ -83,7 +79,7 @@ def generate_launch_description():
                         # of length 5 meters and with 0 cost.
                         "cloud_weights": [
                             2.0,
-                        ],  # BEST RUN WAS WITH [1.0, 2.0, 10.0]
+                        ],
                         "max_costs_relative": [
                             0.8,
                         ],
@@ -91,18 +87,14 @@ def generate_launch_description():
                             0.5
                         ],
                         "neighborhood": 8,
-                        "min_path_cost": 1.0,
                         "planning_freq": 1.0,
-                        "plan_from_goal_dist": 2.0,
                         "num_input_clouds": 1,
                         "input_queue_size": 2,
                         "start_on_request": True,
                         "stop_on_goal": True,
                         "goal_reached_dist": 0.5,
-                        "mode": 2,
-                        # Ad-hoc cost parameters; uncomment to enable
+                        # Ad-hoc cost parameters.
                         "adhoc_costs": ["sidelobes"],
-                        # "adhoc_costs": ["nothing"],
                         "adhoc_layer": 3,
                         # Sidelobes strategy parameters
                         "sidelobes_offset_distance": 1.0,
@@ -112,7 +104,6 @@ def generate_launch_description():
                     }
                 ],
                 remappings=[
-                    # ("input_cloud_0", "osm_grid"),
                     ("input_cloud_0", "geometric_traversability_cloud"),
                 ],
             )

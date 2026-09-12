@@ -268,6 +268,7 @@ if(BUILD_TESTING)
         target_include_directories(test_grid PRIVATE
             $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>)
         target_link_libraries(test_grid
+            naex_grid
             Boost::graph
             Eigen3::Eigen
             rclcpp::rclcpp

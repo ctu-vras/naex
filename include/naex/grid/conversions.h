@@ -13,7 +13,6 @@
 #include "naex/types.h"
 #include <cmath>
 #include <geometry_msgs/msg/point.hpp>
-#include <geometry_msgs/msg/vector3.hpp>
 #include <sstream>
 #include <string>
 
@@ -25,9 +24,6 @@ template <typename T> inline std::string format(T x, T y, T z) {
   s << "(" << x << ", " << y << ", " << z << ")";
   return s.str();
 }
-inline std::string format(const geometry_msgs::msg::Vector3 &v) {
-  return format(v.x, v.y, v.z);
-}
 inline std::string format(const geometry_msgs::msg::Point &v) {
   return format(v.x, v.y, v.z);
 }
@@ -36,9 +32,6 @@ inline std::string format(const Vec3 &v) { return format(v.x(), v.y(), v.z()); }
 inline Vec3 to_vec3(const geometry_msgs::msg::Point &p) {
   return Vec3(p.x, p.y, p.z);
 }
-inline Vec3 to_vec3(const geometry_msgs::msg::Vector3 &v) {
-  return Vec3(v.x, v.y, v.z);
-}
 inline Vec3 to_vec3(const Point2f &v) { return Vec3(v.x, v.y, 0.f); }
 
 template <typename T> inline bool is_valid(T x, T y, T z) {
@@ -46,9 +39,6 @@ template <typename T> inline bool is_valid(T x, T y, T z) {
 }
 inline bool is_valid(const Vec3 &p) { return is_valid(p.x(), p.y(), p.z()); }
 inline bool is_valid(const geometry_msgs::msg::Point &p) {
-  return is_valid(p.x, p.y, p.z);
-}
-inline bool is_valid(const geometry_msgs::msg::Vector3 &p) {
   return is_valid(p.x, p.y, p.z);
 }
 

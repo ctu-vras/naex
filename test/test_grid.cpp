@@ -1,6 +1,7 @@
 // Unit tests for the grid planner data structures.
 #include "naex/grid/graph.h"
 #include "naex/grid/grid.h"
+#include "naex/grid/path.h"
 #include "naex/grid/search.h"
 
 #include <gtest/gtest.h>
@@ -19,8 +20,10 @@ using naex::grid::Cost;
 using naex::grid::Costs;
 using naex::grid::Graph;
 using naex::grid::Grid;
+using naex::grid::INVALID_VERTEX_ID;
 using naex::grid::Point2f;
 using naex::grid::ShortestPaths;
+using naex::grid::trace_path_vertices;
 using naex::grid::VertexId;
 
 namespace {
@@ -1517,4 +1520,25 @@ TEST(AStar, ReusesItsBuffersAcrossRuns) {
                    true, 1000.f, 8, max_costs);
   EXPECT_TRUE(sp.found_goal());
   EXPECT_NEAR(sp.path_cost(goal), first, 1e-4f);
+}
+
+// --- trace_path_vertices (shared by grid_planner and mule_planner) --------
+
+TEST(TracePathVertices, WalksBackFromV1ToV0) {
+  // predecessor[v] == v's predecessor; 0 is its own predecessor (the root).
+  const std::vector<VertexId> predecessor = {0, 0, 1, 2};
+  const auto path = trace_path_vertices(0, 3, predecessor);
+  const std::vector<VertexId> expected = {0, 1, 2, 3};
+  EXPECT_EQ(path, expected);
+}
+
+TEST(TracePathVertices, CyclicPredecessorMapTerminates) {
+  // 0 is the (claimed) root, but 1 and 2 form a cycle unreachable from it --
+  // a bug in whatever built the map.  Tracing back from 3 must still
+  // terminate instead of looping forever.
+  const std::vector<VertexId> predecessor = {0, 2, 1, 2};
+  std::vector<VertexId> path;
+  trace_path_vertices(0, 3, predecessor, path);
+  EXPECT_FALSE(path.empty());
+  EXPECT_LE(path.size(), 2 * predecessor.size());
 }

@@ -367,8 +367,7 @@ protected:
  */
 class BFS {
 public:
-  explicit BFS(const Grid &grid, const Costs &max_costs = Costs(0.0))
-      : graph_(grid, max_costs) {}
+  explicit BFS(const Grid &grid) : graph_(grid) {}
 
   void run(VertexId seed) {
     const size_t n = graph_.num_vertices();
@@ -381,23 +380,17 @@ public:
         boost::visitor(boost::default_bfs_visitor())
             .vertex_index_map(boost::identity_property_map())
             .color_map(color_map));
-    num_visited_ = 0;
     for (size_t v = 0; v < n; ++v) {
-      if (colors_[v] != boost::white_color) {
-        visited_[v] = 1;
-        ++num_visited_;
-      }
+      visited_[v] = (colors_[v] != boost::white_color) ? 1 : 0;
     }
   }
 
   const std::vector<std::uint8_t> &visited() const { return visited_; }
-  size_t num_visited() const { return num_visited_; }
 
 protected:
   Graph graph_;
   std::vector<std::uint8_t> visited_;
   std::vector<boost::default_color_type> colors_;
-  size_t num_visited_{0};
 };
 
 } // namespace grid

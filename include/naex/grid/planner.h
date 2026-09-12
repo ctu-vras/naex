@@ -36,44 +36,6 @@ namespace naex {
 namespace grid {
 
 /**
- * Values of the integer `mode` parameter of the planner.
- *
- * The parameter stays an int and keeps its values, so every launch file that
- * passes `mode: 2` is unaffected; only the comparison in plan() is named.
- */
-enum class PlanningMode : int {
-  /// Plan in 3-D: the z of the start and goal poses is used as received.
-  kSpatial3d = 0,
-  /// Plan in the ground plane: the z of the start and goal poses is zeroed.
-  kPlanar2d = 2,
-};
-
-/// Default of the `mode` parameter, i.e. what every launch file passes.
-inline constexpr PlanningMode kDefaultPlanningMode = PlanningMode::kPlanar2d;
-
-/**
- * Map a `mode` parameter value onto PlanningMode.
- *
- * An unrecognized value keeps the historical behaviour -- only mode 2 ever
- * zeroed the z of the request -- and is warned about once, at construction.
- */
-inline PlanningMode to_planning_mode(int mode, const rclcpp::Logger &log) {
-  switch (mode) {
-  case static_cast<int>(PlanningMode::kSpatial3d):
-    return PlanningMode::kSpatial3d;
-  case static_cast<int>(PlanningMode::kPlanar2d):
-    return PlanningMode::kPlanar2d;
-  default:
-    RCLCPP_WARN(log,
-                "Unknown mode %d; planning in 3-D, i.e. as mode %d, which is "
-                "what every value but %d has always done.",
-                mode, static_cast<int>(PlanningMode::kSpatial3d),
-                static_cast<int>(PlanningMode::kPlanar2d));
-    return PlanningMode::kSpatial3d;
-  }
-}
-
-/**
  * nav_msgs/OccupancyGrid cell values the planner writes.
  *
  * The message encodes occupancy as 0..100 plus -1 for "unknown".  127 is out
@@ -140,11 +102,12 @@ struct PlanTimings {
 };
 
 /**
- * @brief Global planner on 2D grid.
+ * @brief Global planner on a 2-D grid.
  *
- * It uses multi-level grid from multiple sources.
- * The first level may be constructed from a map and remain static.
- * The second level may be dynamic, updated from external traversability.
+ * Each input cloud writes its own cost layer (up to Costs::kSize of them), so
+ * several traversability sources -- e.g. geometric and semantic -- can be
+ * combined into one grid; every layer is updated continuously from its cloud,
+ * none of them is a static base layer.
  */
 class Planner {
 public:
@@ -207,10 +170,6 @@ public:
 
   bool plan(nav_msgs::srv::GetPlan::Request::SharedPtr req,
             nav_msgs::srv::GetPlan::Response::SharedPtr res);
-
-  void fill_map_cloud(sensor_msgs::msg::PointCloud2 &cloud, const Grid &grid,
-                      const std::vector<Cost> &path_costs,
-                      const std::vector<Cost> &f_values);
 
   /**
    * Publish the rviz-only "map" cloud, if anybody is listening.
@@ -381,11 +340,6 @@ protected:
   // Transforms and frames
   std::shared_ptr<tf2_ros::Buffer> tf_{};
   std::shared_ptr<tf2_ros::TransformListener> tf_sub_;
-  /// Deprecated; no lookup uses it any more.  Kept declared so that launch
-  /// files written before request_tf_timeout_ existed still load, and it
-  /// seeds request_tf_timeout_ when it is set to anything but this default
-  /// (see the parameter declarations in the constructor).
-  float tf_timeout_{3.0};
   /// Timeout of every TF lookup on the get_plan/plan path; short on purpose,
   /// see P5.  All of them are "latest available", so they can only wait when
   /// TF is genuinely absent, and then failing fast beats parking the single
@@ -410,8 +364,6 @@ protected:
   bool publish_occupancy_grid_{true};
   int occupancy_grid_w_{500};
   int occupancy_grid_h_{500};
-  float occupancy_grid_resolution_{0.4};
-  float max_total_cost_{2.};
 
   // Subscribers
   std::vector<rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr>
@@ -483,7 +435,6 @@ protected:
   bool start_on_request_{true};
   bool stop_on_goal_{true};
   float goal_reached_dist_{std::numeric_limits<float>::quiet_NaN()};
-  PlanningMode mode_{kDefaultPlanningMode};
   /// If the start is farther than this from the nearest traversable cell we
   /// plan a straight line to the goal instead (this should only happen with
   /// navigate-through-poses, where the start need not be the robot).

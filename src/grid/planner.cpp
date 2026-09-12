@@ -11,7 +11,6 @@
 #include <geometry_msgs/msg/transform_stamped.hpp>
 #include <limits>
 #include <memory>
-#include <numeric>
 #include <sensor_msgs/point_cloud2_iterator.hpp>
 #include <sstream>
 #include <stdexcept>
@@ -69,7 +68,8 @@ constexpr double kFrontierMarkerAlpha = 1.0;
 } // namespace
 
 Planner::Planner(rclcpp::Node::SharedPtr nh) : nh_(nh) {
-  // Invalid position invokes exploration mode.
+  // A NaN start is replaced with the robot position in plan(); a NaN goal
+  // fails the request (there is no exploration mode).
   last_request_ = std::make_shared<nav_msgs::srv::GetPlan::Request>();
   last_request_->start.pose.position.x =
       std::numeric_limits<double>::quiet_NaN();
@@ -98,12 +98,6 @@ Planner::Planner(rclcpp::Node::SharedPtr nh) : nh_(nh) {
   map_frame_ = nh_->declare_parameter<std::string>("map_frame", map_frame_);
   robot_frame_ =
       nh_->declare_parameter<std::string>("robot_frame", robot_frame_);
-  // Deprecated: no lookup reads tf_timeout_ any more (the request path uses
-  // request_tf_timeout_, the cloud path cloud_tf_timeout_).  It stays declared
-  // so that older launch files still load, and it seeds request_tf_timeout_
-  // below.
-  const float tf_timeout_default = tf_timeout_;
-  tf_timeout_ = nh_->declare_parameter<float>("tf_timeout", tf_timeout_);
   // Cloud callbacks run on the only executor thread, so a long wait here
   // stalls the planning timer and the get_plan service; drop the frame
   // instead (P5).  It still has to cover one TF period: with a 10 Hz TF the
@@ -115,12 +109,6 @@ Planner::Planner(rclcpp::Node::SharedPtr nh) : nh_(nh) {
   // request path must not be able to park it for seconds either.  Every lookup
   // it makes is "latest available" (see plan()), so it can only ever wait when
   // TF is genuinely absent, and then failing fast is what the caller wants.
-  // Compatibility: a configuration that set tf_timeout to anything but its own
-  // default asked for a request-path timeout back when tf_timeout was the only
-  // knob, so inherit it unless request_tf_timeout is given explicitly.
-  if (tf_timeout_ != tf_timeout_default) {
-    request_tf_timeout_ = tf_timeout_;
-  }
   request_tf_timeout_ =
       nh_->declare_parameter<float>("request_tf_timeout", request_tf_timeout_);
 
@@ -189,9 +177,6 @@ Planner::Planner(rclcpp::Node::SharedPtr nh) : nh_(nh) {
   stop_on_goal_ = nh_->declare_parameter<bool>("stop_on_goal", stop_on_goal_);
   goal_reached_dist_ =
       nh_->declare_parameter<float>("goal_reached_dist", goal_reached_dist_);
-  mode_ = to_planning_mode(nh_->declare_parameter<int>(
-                               "mode", static_cast<int>(kDefaultPlanningMode)),
-                           nh_->get_logger());
   max_start_to_traversable_dist_ = nh_->declare_parameter<float>(
       "max_start_to_traversable_dist", max_start_to_traversable_dist_);
 
@@ -231,12 +216,6 @@ Planner::Planner(rclcpp::Node::SharedPtr nh) : nh_(nh) {
       nh_->declare_parameter<int>("occupancy_grid_w", occupancy_grid_w_);
   occupancy_grid_h_ =
       nh_->declare_parameter<int>("occupancy_grid_h", occupancy_grid_h_);
-  occupancy_grid_resolution_ = nh_->declare_parameter<float>(
-      "occupancy_grid_resolution", occupancy_grid_resolution_);
-  // Not including the ad-hoc (sidelobes) layer.
-  // TODO: this is vulnerable to changes of cloud_weights.
-  max_total_cost_ = static_cast<float>(
-      std::reduce(cloud_weights_.begin(), cloud_weights_.end(), 0.0));
 
   // Sidelobes strategy parameters
   sidelobes_offset_distance_ = nh_->declare_parameter(
@@ -265,10 +244,9 @@ Planner::Planner(rclcpp::Node::SharedPtr nh) : nh_(nh) {
   if (publish_occupancy_grid_) {
     RCLCPP_INFO(nh_->get_logger(),
                 "Publishing the occupancy grid on 'map_occupancy_grid' "
-                "(%d x %d cells, resolution %.3f, max map cost %.3f); it "
-                "feeds the nav2 global costmap.",
-                occupancy_grid_w_, occupancy_grid_h_,
-                occupancy_grid_resolution_, max_total_cost_);
+                "(%d x %d cells, resolution %.3f); it feeds the nav2 global "
+                "costmap.",
+                occupancy_grid_w_, occupancy_grid_h_, grid_.cell_size());
     RCLCPP_INFO(nh_->get_logger(),
                 "Sending one empty msg to 'map_occupancy_grid' to "
                 "initialize the nav2 global_costmap.");
@@ -477,7 +455,7 @@ VertexId Planner::get_cheapest_frontier(const ShortestPaths &sp,
   Value best_nearest_dist = std::numeric_limits<Value>::infinity();
   std::vector<VertexId> best_component;
   // One graph for all seeds (it used to be rebuilt per seed).
-  BFS bfs(frontiers_grid, max_costs_absolute_);
+  BFS bfs(frontiers_grid);
 
   for (VertexId seed = 0; seed < nf; ++seed) {
     if (explored[seed]) {
@@ -559,28 +537,10 @@ VertexId Planner::get_cheapest_frontier(const ShortestPaths &sp,
 std::pair<float, VertexId>
 Planner::get_nearest_traversable_vertex(const Vec3 &p0) {
   Timer t_scan;
-  float best_dist = std::numeric_limits<float>::infinity();
-  VertexId best_v = INVALID_VERTEX_ID;
-  const VertexId n = static_cast<VertexId>(grid_.size());
-  for (VertexId v = 0; v < n; ++v) {
-    if (!costs_in_bounds(grid_.costs(v), max_costs_absolute_)) {
-      continue;
-    }
-    const Value dist = (to_vec3(grid_.point(v)) - p0).norm();
-    if (dist < best_dist) {
-      best_v = v;
-      best_dist = dist;
-    }
-  }
+  const auto result = naex::grid::get_nearest_traversable_vertex(
+      nh_->get_logger(), grid_, max_costs_absolute_, p0);
   plan_timings_.scan_traversable = t_scan.seconds_elapsed();
-  if (best_v != INVALID_VERTEX_ID) {
-    RCLCPP_INFO(nh_->get_logger(),
-                "Closest traversable point to start: %s (dist %.3f).",
-                format(to_vec3(grid_.point(best_v))).c_str(), best_dist);
-  } else {
-    RCLCPP_ERROR(nh_->get_logger(), "No traversable points in graph!");
-  }
-  return std::make_pair(best_dist, best_v);
+  return result;
 }
 
 void Planner::return_straight_line_plan(
@@ -806,10 +766,10 @@ bool Planner::plan(nav_msgs::srv::GetPlan::Request::SharedPtr req,
     start.header.frame_id = map_frame_;
   }
 
-  if (mode_ == PlanningMode::kPlanar2d) {
-    start.pose.position.z = 0.f;
-    goal.pose.position.z = 0.f;
-  }
+  // The grid is 2-D, so the z of both poses is planned on the ground plane;
+  // only x/y ever reach the grid.
+  start.pose.position.z = 0.f;
+  goal.pose.position.z = 0.f;
 
   const Vec3 p0 = to_vec3(start.pose.position);
   Vec3 p1 = to_vec3(goal.pose.position);
@@ -883,7 +843,6 @@ bool Planner::plan(nav_msgs::srv::GetPlan::Request::SharedPtr req,
 
   if (!is_valid(goal.pose.position)) {
     RCLCPP_WARN(nh_->get_logger(), "Goal not valid.");
-    // TODO: Return random path in exploration mode.
     return false;
   }
 
@@ -961,36 +920,6 @@ bool Planner::plan(nav_msgs::srv::GetPlan::Request::SharedPtr req,
               "Path with %lu poses toward goal %s planned (%.3f s).",
               res->plan.poses.size(), format(p1).c_str(), t.seconds_elapsed());
   return true;
-}
-
-void Planner::fill_map_cloud(sensor_msgs::msg::PointCloud2 &cloud,
-                             const Grid &grid,
-                             const std::vector<Cost> &path_costs,
-                             const std::vector<Cost> &f_values) {
-  // TODO: Allow sending local map.
-  append_field<float>("x", 1, cloud);
-  append_field<float>("y", 1, cloud);
-  append_field<float>("z", 1, cloud);
-  append_field<float>("cost", 1, cloud);
-  append_field<float>("path_cost", 1, cloud);
-  append_field<float>("f_value", 1, cloud);
-  const VertexId num_cells = static_cast<VertexId>(grid.size());
-  resize_cloud(cloud, 1, num_cells);
-
-  sensor_msgs::PointCloud2Iterator<float> x_it(cloud, "x");
-  sensor_msgs::PointCloud2Iterator<float> cost_it(cloud, "cost");
-  sensor_msgs::PointCloud2Iterator<float> path_cost_it(cloud, "path_cost");
-  sensor_msgs::PointCloud2Iterator<float> f_value_it(cloud, "f_value");
-  for (VertexId v = 0; v < num_cells;
-       ++v, ++x_it, ++cost_it, ++path_cost_it, ++f_value_it) {
-    const auto p = grid.point(v);
-    x_it[0] = p.x;
-    x_it[1] = p.y;
-    x_it[2] = 0.f;
-    cost_it[0] = grid.costs(v).total();
-    path_cost_it[0] = path_costs[v];
-    f_value_it[0] = f_values[v];
-  }
 }
 
 void Planner::create_and_publish_map_cloud(const ShortestPaths &sp) {

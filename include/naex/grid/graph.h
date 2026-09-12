@@ -22,10 +22,6 @@ typedef ValueIterator<EdgeId> EdgeIter;
 inline constexpr VertexId INVALID_VERTEX_ID =
     std::numeric_limits<VertexId>::max();
 
-// neighbor4(), neighbor8(), distance8() and kDist8 moved to grid.h with P2:
-// Grid itself has to resolve neighbours now that it keeps the flat neighbour
-// table.  They are still naex::grid::neighbor8 etc. for every caller.
-
 /**
  * Boost.Graph adapter over a Grid, with the neighbourhood fixed at compile
  * time (P2).
@@ -51,8 +47,6 @@ template <uint8_t N> class GraphN {
 
 public:
   static constexpr Cost INF = std::numeric_limits<Cost>::infinity();
-  /// Compile-time neighbourhood, 4 or 8.
-  static constexpr uint8_t kNeighborhood = N;
   /**
    * Cost of crossing a cell that costs nothing at all.
    *
@@ -86,7 +80,6 @@ public:
   }
 
   inline VertexId num_vertices() const { return grid_.size(); }
-  inline EdgeId num_edges() const { return N * num_vertices(); }
   inline std::pair<VertexIter, VertexIter> vertices() const {
     return {VertexIter(0), VertexIter(num_vertices())};
   }
@@ -146,9 +139,6 @@ public:
     return cost;
   }
 
-  /// The grid the graph is a view of.
-  const Grid &grid() const { return grid_; }
-
 protected:
   const Grid &grid_;
   const Costs max_costs_;
@@ -184,8 +174,6 @@ inline int neighbor_degree(const Grid &grid, CellId v, uint8_t neighborhood,
 
 /// The 8-neighbourhood graph; the default everywhere.
 typedef GraphN<8> Graph;
-/// The 4-neighbourhood graph.
-typedef GraphN<4> Graph4;
 
 template <uint8_t N> class EdgeCostsN {
 public:
@@ -195,8 +183,6 @@ public:
 protected:
   const GraphN<N> &graph_;
 };
-
-typedef EdgeCostsN<8> EdgeCosts;
 
 // Boost.Graph free functions found via ADL must live in naex::grid.
 template <uint8_t N>

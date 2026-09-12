@@ -29,7 +29,6 @@ def generate_launch_description():
                         "max_start_to_traversable_dist": 5.0,
                         # publish a replanned prefix by itself only if it is at least this long
                         "min_traversable_path_length": 3.0,
-                        "robot_frame": "base_link",
                         "position_field": "x",
                         "max_cloud_age": 9999999999.0,
                         "max_ts_diff": 9999999999.0,
@@ -44,7 +43,6 @@ def generate_launch_description():
                     }
                 ],
                 remappings=[
-                    # ("input_cloud_0", "osm_grid"),
                     ("path", "/path"),
                     ("points", "/terrain_map"),
                 ],

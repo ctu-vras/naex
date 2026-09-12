@@ -1,6 +1,5 @@
 #pragma once
 
-#include "naex/clouds.h"
 #include "naex/grid/conversions.h"
 #include "naex/grid/grid.h"
 #include "naex/grid/path.h"
@@ -44,8 +43,6 @@ public:
         nh_->declare_parameter<std::string>("position_field", position_field_);
     cost_field_ =
         nh_->declare_parameter<std::string>("cost_field", cost_field_);
-    robot_frame_ =
-        nh_->declare_parameter<std::string>("robot_frame", robot_frame_);
     astar_max_range_ =
         nh_->declare_parameter<float>("astar_max_range", astar_max_range_);
     obstacle_cost_threshold_ = nh_->declare_parameter<float>(
@@ -152,11 +149,10 @@ public:
     start.pose.position.y = 0.;
     start.pose.position.z = 0.;
     start.pose.orientation.w = 1.;
-    VertexId v0 = INVALID_VERTEX_ID;
+    VertexId v0 = grid_.find_cell(grid_.point_to_cell({0., 0.}));
 
-    if (grid_.has_cell(grid_.point_to_cell({0., 0.}))) {
+    if (v0 != INVALID_VERTEX_ID) {
       // Grid contains start cell.
-      v0 = grid_.cell_id(grid_.point_to_cell({0., 0.}));
       if (naex::grid::costs_in_bounds(grid_.costs(v0), max_costs_)) {
         // Start cell is traversable -> perfect, plan from there, do nothing.
         RCLCPP_INFO(nh_->get_logger(), "Planning from start position %s.",
@@ -165,10 +161,8 @@ public:
         // Start cell is not traversable .
         RCLCPP_WARN(nh_->get_logger(), "Start position %s is not traversable.",
                     format(to_vec3(grid_.point(v0))).c_str());
-        std::pair<float, VertexId> nearest_traversable =
-            get_nearest_traversable_vertex();
-        float best_dist = nearest_traversable.first;
-        VertexId best_v = nearest_traversable.second;
+        const auto [best_dist, best_v] = get_nearest_traversable_vertex(
+            nh_->get_logger(), grid_, max_costs_, Vec3::Zero());
         if (best_v == INVALID_VERTEX_ID) {
           publish_empty_path(input->header.frame_id);
           return;
@@ -194,10 +188,8 @@ public:
     } else {
       // Grid does not contain start cell.
       RCLCPP_WARN(nh_->get_logger(), "Start position (0., 0.) is unexplored.");
-      std::pair<float, VertexId> nearest_traversable =
-          get_nearest_traversable_vertex();
-      float best_dist = nearest_traversable.first;
-      VertexId best_v = nearest_traversable.second;
+      const auto [best_dist, best_v] = get_nearest_traversable_vertex(
+          nh_->get_logger(), grid_, max_costs_, Vec3::Zero());
       if (best_v == INVALID_VERTEX_ID) {
         publish_empty_path(input->header.frame_id);
         return;
@@ -230,7 +222,7 @@ public:
                         astar_max_range_, static_cast<uint8_t>(neighborhood_),
                         max_costs_);
 
-    create_and_publish_map_cloud(astar);
+    create_and_publish_map_cloud(astar, input->header.frame_id);
 
     const auto [goal, goal_path_index] = choose_goal(current_path, astar);
     if (goal == INVALID_VERTEX_ID) {
@@ -240,40 +232,14 @@ public:
       return;
     }
 
-    std::vector<VertexId> path_vertices;
-    assert(astar.predecessors()[v0] == v0);
-    VertexId v = goal;
-    while (v != v0) {
-      path_vertices.push_back(v);
-      if (v == astar.predecessors()[v]) {
-        RCLCPP_ERROR(nh_->get_logger(),
-                     "Encountered cyclic predecessor while tracing path.");
-        break;
-      }
-      v = astar.predecessors()[v];
-    }
-    path_vertices.push_back(v);
-    std::reverse(path_vertices.begin(), path_vertices.end());
-
-    if (path_vertices.empty()) {
-      RCLCPP_WARN(nh_->get_logger(),
-                  "Planned path is empty. Publishing empty path.");
-      publish_empty_path(input->header.frame_id);
-      return;
-    }
+    const auto path_vertices =
+        trace_path_vertices(v0, goal, astar.predecessors());
 
     nav_msgs::msg::Path local_plan;
     local_plan.header.frame_id = input->header.frame_id;
     local_plan.header.stamp = nh_->get_clock()->now();
     local_plan.poses.push_back(start);
     append_path(path_vertices, grid_, local_plan);
-
-    if (local_plan.poses.empty()) {
-      RCLCPP_WARN(nh_->get_logger(),
-                  "Planned path is empty. Publishing empty path.");
-      publish_empty_path(input->header.frame_id);
-      return;
-    }
 
     if (is_path_obstacle_free(current_path, goal_path_index + 1)) {
       append_path_suffix(current_path, goal_path_index + 1, local_plan);
@@ -312,42 +278,16 @@ public:
     path_ = *input;
   }
 
-  void fill_map_cloud(sensor_msgs::msg::PointCloud2 &cloud, const Grid &grid,
-                      const std::vector<Cost> &path_costs,
-                      const std::vector<Cost> &f_values) {
-    // TODO: Allow sending local map.
-    append_field<float>("x", 1, cloud);
-    append_field<float>("y", 1, cloud);
-    append_field<float>("z", 1, cloud);
-    append_field<float>("cost", 1, cloud);
-    append_field<float>("path_cost", 1, cloud);
-    append_field<float>("f_value", 1, cloud);
-    const VertexId num_cells = static_cast<VertexId>(grid.size());
-    resize_cloud(cloud, 1, num_cells);
-
-    sensor_msgs::PointCloud2Iterator<float> x_it(cloud, "x");
-    sensor_msgs::PointCloud2Iterator<float> cost_it(cloud, "cost");
-    sensor_msgs::PointCloud2Iterator<float> path_cost_it(cloud, "path_cost");
-    sensor_msgs::PointCloud2Iterator<float> f_values_it(cloud, "f_value");
-    for (VertexId v = 0; v < num_cells;
-         ++v, ++x_it, ++cost_it, ++path_cost_it, ++f_values_it) {
-      const auto p = grid.point(v);
-      x_it[0] = p.x;
-      x_it[1] = p.y;
-      x_it[2] = 0.f;
-      cost_it[0] = grid.costs(v).total();
-      path_cost_it[0] = path_costs[v];
-      f_values_it[0] = f_values[v];
-    }
-  }
-
-  void create_and_publish_map_cloud(const ShortestPaths &sp) {
+  void create_and_publish_map_cloud(const ShortestPaths &sp,
+                                    const std::string &frame_id) {
     // rviz-only topic; skip building 24 B per cell when nobody listens (P4).
     if (map_pub_->get_subscription_count() == 0) {
       return;
     }
     auto cloud = std::make_unique<sensor_msgs::msg::PointCloud2>();
-    cloud->header.frame_id = robot_frame_;
+    // The grid is built in the input cloud's own frame (see cloud_cb), not
+    // the robot frame, so the debug cloud must carry that frame too.
+    cloud->header.frame_id = frame_id;
     cloud->header.stamp = nh_->get_clock()->now();
     fill_map_cloud(*cloud, grid_, sp.path_costs(), sp.f_values());
     map_pub_->publish(std::move(cloud));
@@ -365,16 +305,14 @@ public:
 
     for (size_t i = 0; i < path.poses.size(); ++i) {
       const auto &pose = path.poses[i];
-      auto c = grid_.point_to_cell(to_point2f(pose.pose.position));
-      if (grid_.has_cell(c)) {
-        VertexId v = grid_.cell_id(c);
-        if (std::isfinite(astar.path_cost(v)) &&
-            naex::grid::costs_in_bounds(grid_.costs(v), max_costs_) &&
-            astar.visited()[v]) {
-          // reachable
-          goal = v;
-          goal_path_index = i;
-        }
+      const auto c = grid_.point_to_cell(to_point2f(pose.pose.position));
+      const VertexId v = grid_.find_cell(c);
+      if (v != INVALID_VERTEX_ID && std::isfinite(astar.path_cost(v)) &&
+          naex::grid::costs_in_bounds(grid_.costs(v), max_costs_) &&
+          astar.visited()[v]) {
+        // reachable
+        goal = v;
+        goal_path_index = i;
       }
     }
 
@@ -387,12 +325,12 @@ public:
                              size_t start_index = 0) const {
     for (size_t i = start_index; i < path.poses.size(); ++i) {
       const auto &pose = path.poses[i];
-      auto cell = grid_.point_to_cell(to_point2f(pose.pose.position));
-      if (!grid_.has_cell(cell)) {
+      const auto cell = grid_.point_to_cell(to_point2f(pose.pose.position));
+      const VertexId v = grid_.find_cell(cell);
+      if (v == INVALID_VERTEX_ID) {
         continue;
       }
-      if (!naex::grid::costs_in_bounds(grid_.costs(grid_.cell_id(cell)),
-                                       max_costs_)) {
+      if (!naex::grid::costs_in_bounds(grid_.costs(v), max_costs_)) {
         return false;
       }
     }
@@ -467,32 +405,6 @@ public:
     path_pub_->publish(empty_path);
   }
 
-  std::pair<float, VertexId> get_nearest_traversable_vertex() {
-    // Use the nearest traversable point to robot as the starting point.
-    float best_dist = std::numeric_limits<float>::infinity();
-    VertexId best_v = INVALID_VERTEX_ID;
-    const VertexId n = static_cast<VertexId>(grid_.size());
-    for (VertexId v = 0; v < n; ++v) {
-      if (!naex::grid::costs_in_bounds(grid_.costs(v), max_costs_)) {
-        continue;
-      }
-
-      Value dist = to_vec3(grid_.point(v)).norm();
-      if (dist < best_dist) {
-        best_v = v;
-        best_dist = dist;
-      }
-    }
-    if (best_v != INVALID_VERTEX_ID) {
-      RCLCPP_INFO(nh_->get_logger(),
-                  "Closest traversable point to start: %s (dist %.3f).",
-                  format(to_vec3(grid_.point(best_v))).c_str(), best_dist);
-    } else {
-      RCLCPP_ERROR(nh_->get_logger(), "No traversable points in graph!");
-    }
-    return std::make_pair(best_dist, best_v);
-  }
-
 private:
   rclcpp::Node::SharedPtr nh_;
 
@@ -506,7 +418,6 @@ private:
   float max_cloud_age_{0.5};
   std::string position_field_{"x"};
   std::string cost_field_{"traversability"};
-  std::string robot_frame_{"os_sensor"};
   float astar_max_range_{50.}; // m; nodes further away than this are ignored
   int neighborhood_{8};
   float obstacle_cost_threshold_{0.7};

@@ -23,9 +23,8 @@ behaviour::
     ros2 launch naex bench_grid_planner.launch.py \\
         field_size:=100.0 input_range:=15.0 log_level:=debug
 
-``bench_script`` defaults to the installed script.  Before the CMake install
-rule is integrated (see scratchpad/cmake_additions_perf.md) it can be pointed
-at the source tree:
+``bench_script`` defaults to the installed script; point it at the source tree
+instead with:
 
     ros2 launch ./launch/bench_grid_planner.launch.py \\
         bench_script:=$PWD/scripts/bench_grid_planner.py
@@ -104,11 +103,9 @@ _ARGS = {
     # 0 keeps every measured cycle request-driven; > 0 also runs the planning
     # timer, which is what publishes the "path" topic the tf_gap run measures.
     "planning_freq": "0.0",
-    # tf_timeout is deprecated and unused; kept so that the benchmark still
-    # accepts it on the command line.  cloud_tf_timeout has to cover one TF
-    # period (the replayed drops were 1-6 ms of extrapolation into the future
-    # against a 10 Hz TF), request_tf_timeout bounds the get_plan path.
-    "tf_timeout": "3.0",
+    # cloud_tf_timeout has to cover one TF period (the replayed drops were
+    # 1-6 ms of extrapolation into the future against a 10 Hz TF),
+    # request_tf_timeout bounds the get_plan path.
     "cloud_tf_timeout": "0.2",
     "request_tf_timeout": "0.5",
 }
@@ -177,7 +174,6 @@ def generate_launch_description():
                 "start_on_request": False,
                 "stop_on_goal": False,
                 "goal_reached_dist": 0.5,
-                "mode": 2,
                 "adhoc_costs": ["sidelobes"],
                 "adhoc_layer": 3,
                 "sidelobes_offset_distance": 1.0,
@@ -189,7 +185,6 @@ def generate_launch_description():
                 "cell_size": ParameterValue(cfg["cell_size"], value_type=float),
                 "neighborhood": ParameterValue(cfg["neighborhood"], value_type=int),
                 "planning_freq": ParameterValue(cfg["planning_freq"], value_type=float),
-                "tf_timeout": ParameterValue(cfg["tf_timeout"], value_type=float),
                 "cloud_tf_timeout": ParameterValue(
                     cfg["cloud_tf_timeout"], value_type=float
                 ),

@@ -74,7 +74,6 @@ tested as *f* > 1e9 and not with `isfinite` after an A\* run
 | `cloud_levels` | int[] | `[]` (cloud *i* into cost layer *i*) |
 | `map_frame` | string | `map` |
 | `robot_frame` | string | `base_footprint` |
-| `tf_timeout` | double | 3.0 (**deprecated**, unused; see below) |
 | `request_tf_timeout` | double | 0.5 (every TF lookup on the `get_plan` path) |
 | `cloud_tf_timeout` | double | 0.2 (per-cloud lookup; late clouds are dropped) |
 | `max_cloud_age` | double | 5.0 |
@@ -97,13 +96,11 @@ tested as *f* > 1e9 and not with `isfinite` after an A\* run
 | `max_relative_dist_to_goal` | double | 2.0 |
 | `max_start_to_traversable_dist` | double | 2.0 m |
 | `publish_occupancy_grid` | bool | true |
-| `occupancy_grid_w`, `occupancy_grid_h` | int | 500 (cells) |
-| `occupancy_grid_resolution` | double | 0.4 (declared; the published grid uses `cell_size`) |
+| `occupancy_grid_w`, `occupancy_grid_h` | int | 500 (cells; resolution is `cell_size`) |
 | `planning_freq` | double | 1.0 (Hz; <= 0 disables re-planning) |
 | `start_on_request` | bool | true |
 | `stop_on_goal` | bool | true |
 | `goal_reached_dist` | double | NaN |
-| `mode` | int | 2 (`naex::grid::PlanningMode`: 2 = plan in the ground plane, i.e. the z of start and goal is zeroed; any other value plans in 3-D) |
 | `adhoc_costs` | string[] | `[]` (e.g. `["sidelobes"]`) |
 | `adhoc_layer` | int | 3 |
 | `sidelobes_offset_distance` | double | 1.0 |
@@ -112,7 +109,7 @@ tested as *f* > 1e9 and not with `isfinite` after an A\* run
 | `sidelobes_angle_offsets` | double[] | `[-90.0, -90.0]` (deg) |
 
 Parameter types are strict: every floating-point parameter is a `double`
-(`tf_timeout: 3` is rejected, use `3.0`) and every integer one an `int`.
+(`cell_size: 1` is rejected, use `1.0`) and every integer one an `int`.
 
 ##### Cost bounds: `max_costs` and `max_costs_relative`
 
@@ -210,12 +207,6 @@ with `now()`, so the buffer is never asked for a transform it cannot have yet),
 so the timeout can only elapse when TF is genuinely absent — and then failing
 fast with a warning is what the caller wants, not a stalled node. The total
 time spent in these lookups is the `tf=` field of `perf plan:`.
-
-`tf_timeout` is **deprecated**: no lookup reads it any more. It is still
-declared so that older launch files load, and — because it used to be the only
-knob for the request path — setting it to anything other than its own default
-`3.0` seeds `request_tf_timeout` with that value. Setting `request_tf_timeout`
-explicitly always wins; a configuration that leaves both alone gets `0.5`.
 
 #### Subscribed topics
 
@@ -339,7 +330,6 @@ With `path_sampling_dist` > 0 the published path is resampled to that spacing.
 | `min_traversable_path_length` | double | 0.0 m |
 | `position_field` | string | `x` |
 | `cost_field` | string | `traversability` |
-| `robot_frame` | string | `os_sensor` |
 | `astar_max_range` | double | 50.0 m |
 | `obstacle_cost_threshold` | double | 0.7 |
 | `max_start_to_traversable_dist` | double | 5.0 m |
