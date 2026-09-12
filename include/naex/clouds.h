@@ -1,7 +1,4 @@
-
-#ifndef NAEX_CLOUDS_H
-#define NAEX_CLOUDS_H
-
+#pragma once
 #include "naex/geom.h"
 #include "naex/point_field_traits.h"
 #include "naex/timer.h"
@@ -17,7 +14,7 @@
 #include <unordered_set>
 
 namespace naex {
-bool bigendian() {
+inline bool bigendian() {
   uint16_t num = 1;
   return !(*(uint8_t *)&num == 1);
 }
@@ -26,7 +23,7 @@ inline size_t num_points(const sensor_msgs::msg::PointCloud2 &cloud) {
   return size_t(cloud.height) * cloud.width;
 }
 
-const sensor_msgs::msg::PointField *
+inline const sensor_msgs::msg::PointField *
 find_field(const sensor_msgs::msg::PointCloud2 &cloud,
            const std::string &name) {
   for (const auto &f : cloud.fields) {
@@ -59,7 +56,7 @@ void fill_const_field(const std::string &name, const T &value,
   }
 }
 
-void reset_fields(sensor_msgs::msg::PointCloud2 &cloud) {
+inline void reset_fields(sensor_msgs::msg::PointCloud2 &cloud) {
   cloud.fields.clear();
   cloud.point_step = 0;
 }
@@ -95,12 +92,12 @@ void append_normal_fields(sensor_msgs::msg::PointCloud2 &cloud) {
   append_field<T>("nz", 1, cloud);
 }
 
-void append_occupancy_fields(sensor_msgs::msg::PointCloud2 &cloud) {
+inline void append_occupancy_fields(sensor_msgs::msg::PointCloud2 &cloud) {
   append_field<uint8_t>("seen_thru", 1, cloud);
   append_field<uint8_t>("hit", 1, cloud);
 }
 
-void append_traversability_fields(sensor_msgs::msg::PointCloud2 &cloud) {
+inline void append_traversability_fields(sensor_msgs::msg::PointCloud2 &cloud) {
   //        8 bytes
   append_field<uint8_t>("normal_pts", 1, cloud);
   append_field<uint8_t>("obs_pts", 1, cloud);
@@ -112,13 +109,13 @@ void append_traversability_fields(sensor_msgs::msg::PointCloud2 &cloud) {
   append_field<uint8_t>("final_lbl", 1, cloud);
 }
 
-void append_planning_fields(sensor_msgs::msg::PointCloud2 &cloud) {
+inline void append_planning_fields(sensor_msgs::msg::PointCloud2 &cloud) {
   append_field<float>("path_cost", 1, cloud);
   append_field<float>("utility", 1, cloud);
   append_field<float>("final_cost", 1, cloud);
 }
 
-void resize_cloud(sensor_msgs::msg::PointCloud2 &cloud, uint32_t height,
+inline void resize_cloud(sensor_msgs::msg::PointCloud2 &cloud, uint32_t height,
                   uint32_t width) {
   cloud.height = height;
   cloud.width = width;
@@ -126,16 +123,16 @@ void resize_cloud(sensor_msgs::msg::PointCloud2 &cloud, uint32_t height,
   cloud.data.resize(height * cloud.row_step, 0);
 }
 
-void print_cloud_summary(const sensor_msgs::msg::PointCloud2 &cloud) {
+inline void print_cloud_summary(const sensor_msgs::msg::PointCloud2 &cloud) {
   sensor_msgs::PointCloud2ConstIterator<float> x_begin(cloud, "x");
   std::stringstream az_ss, el_ss;
 
-  for (Index r = 0; r < cloud.height; r += cloud.height / 8) {
+  for (uint32_t r = 0; r < cloud.height; r += cloud.height / 8) {
     if (r > 0) {
       az_ss << std::endl;
       el_ss << std::endl;
     }
-    for (Index c = 0; c < cloud.width; c += cloud.width / 8) {
+    for (uint32_t c = 0; c < cloud.width; c += cloud.width / 8) {
       const auto it = (x_begin + r * cloud.width + c);
       float az, el, radius;
       cartesian_to_spherical(it[0], it[1], it[2], az, el, radius);
@@ -178,8 +175,8 @@ public:
     double residual_sum = 0.;
     Index n = 0;
 
-    for (Index r = 0; r < height_; ++r) {
-      for (Index c = 0; c < width_; ++c, ++x_it) {
+    for (uint32_t r = 0; r < height_; ++r) {
+      for (uint32_t c = 0; c < width_; ++c, ++x_it) {
         if (!std::isfinite(x_it[0]) || !std::isfinite(x_it[1]) ||
             !std::isfinite(x_it[2]))
           continue;
@@ -229,12 +226,12 @@ public:
 
   void print_model_summary() {
     std::stringstream az_ss, el_ss;
-    for (Index r = 0; r < height_; r += height_ / 8) {
+    for (uint32_t r = 0; r < height_; r += height_ / 8) {
       if (r > 0) {
         az_ss << std::endl;
         el_ss << std::endl;
       }
-      for (Index c = 0; c < width_; c += width_ / 8) {
+      for (uint32_t c = 0; c < width_; c += width_ / 8) {
         Vec3 pt_model(0.f, 0.f, 0.f);
         unproject(Value(r), Value(c), pt_model(0), pt_model(1), pt_model(2));
         Value az, el, r;
@@ -345,7 +342,7 @@ public:
     std::vector<Model> az_models, el_models;
     az_models.reserve(n_points);
     el_models.reserve(n_points);
-    for (Index i = 0; i + 1 < valid.size(); ++i) {
+    for (size_t i = 0; i + 1 < valid.size(); ++i) {
       auto x0 = x_begin + valid[i];
       auto x1 = x_begin + valid[i + 1];
 
@@ -442,7 +439,7 @@ public:
   uint32_t width_;
 };
 
-void copy_cloud_metadata(const sensor_msgs::msg::PointCloud2 &input,
+inline void copy_cloud_metadata(const sensor_msgs::msg::PointCloud2 &input,
                          sensor_msgs::msg::PointCloud2 &output) {
   output.header = input.header;
   output.fields = input.fields;
@@ -485,5 +482,3 @@ void copy_points(const sensor_msgs::msg::PointCloud2 &input, const C &indices,
 }
 
 } // namespace naex
-
-#endif // NAEX_CLOUDS_H

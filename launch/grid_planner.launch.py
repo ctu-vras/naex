@@ -27,13 +27,9 @@ def generate_launch_description():
                         "max_costs": [
                             float("nan"),
                         ],
-                        "default_costs": [
-			    0.5
-			],
+                        "default_costs": [0.5],
                         "neighborhood": 8,
-                        "min_path_cost": 1.0,
                         "planning_freq": 1.0,
-                        "plan_from_goal_dist": 2.0,
                         "num_input_clouds": 1,
                         "input_queue_size": 2,
                         "start_on_request": True,

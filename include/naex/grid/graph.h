@@ -3,6 +3,7 @@
 #include "naex/grid/grid.h"
 #include "naex/iterators.h"
 #include <boost/graph/graph_traits.hpp>
+#include <limits>
 #include <boost/property_map/property_map.hpp>
 
 namespace naex {
@@ -14,7 +15,12 @@ typedef CellId EdgeId;
 typedef ValueIterator<VertexId> VertexIter;
 typedef ValueIterator<EdgeId> EdgeIter;
 
-Cell neighbor4(const Cell &source, int i) {
+/// Sentinel for "no vertex".  Distinct from naex::INVALID_VERTEX, which is a
+/// signed Index and compares badly against the unsigned VertexId.
+inline constexpr VertexId INVALID_VERTEX_ID =
+    std::numeric_limits<VertexId>::max();
+
+inline Cell neighbor4(const Cell &source, int i) {
   Cell target = source;
   switch (i) {
   case 0:
@@ -35,7 +41,7 @@ Cell neighbor4(const Cell &source, int i) {
   return target;
 }
 
-Cell neighbor8(const Cell &source, int i) {
+inline Cell neighbor8(const Cell &source, int i) {
   Cell target = source;
   switch (i) {
   case 0:
@@ -72,7 +78,7 @@ Cell neighbor8(const Cell &source, int i) {
   return target;
 }
 
-Cost distance8(int i) {
+inline Cost distance8(int i) {
   switch (i) {
   case 0:
   case 2:
@@ -109,7 +115,7 @@ public:
   inline std::pair<EdgeIter, EdgeIter> out_edges(const VertexId &u) const {
     return {EdgeIter(neighborhood_ * u), EdgeIter(neighborhood_ * (u + 1))};
   }
-  inline EdgeId out_degree(const VertexId &u) const { return neighborhood_; }
+  inline EdgeId out_degree(const VertexId &) const { return neighborhood_; }
   inline VertexId source(const EdgeId &e) const { return e / neighborhood_; }
   inline VertexId target_index(const EdgeId &e) const {
     return e % neighborhood_;
@@ -133,7 +139,7 @@ public:
   }
 
   bool costsInBounds(const Costs &costs) const {
-    for (size_t i = 0; i < 4; ++i) {
+    for (size_t i = 0; i < Costs::kSize; ++i) {
       // Stop on first invalid max cost.
       if (!std::isfinite(max_costs_[i])) {
         break;
@@ -180,28 +186,7 @@ protected:
   const Graph &graph_;
 };
 
-} // namespace grid
-} // namespace naex
-
-using namespace naex::grid;
-
-namespace boost {
-template <> struct graph_traits<Graph> {
-  typedef VertexId vertex_descriptor;
-  typedef VertexId vertices_size_type;
-  typedef EdgeId edge_descriptor;
-  typedef EdgeId edges_size_type;
-
-  typedef directed_tag directed_category;
-  // typedef undirected_tag directed_category;
-  // typedef allow_parallel_edge_tag edge_parallel_category;
-  typedef disallow_parallel_edge_tag edge_parallel_category;
-
-  typedef bidirectional_traversal_tag traversal_category;
-  typedef VertexIter vertex_iterator;
-  typedef EdgeIter out_edge_iterator;
-};
-
+// Boost.Graph free functions found via ADL must live in naex::grid.
 inline std::pair<VertexIter, VertexIter> vertices(const Graph &g) {
   return g.vertices();
 }
@@ -214,32 +199,33 @@ inline std::pair<EdgeIter, EdgeIter> out_edges(VertexId u, const Graph &g) {
   return g.out_edges(u);
 }
 
-/*
-inline VertexId num_vertices(const Graph& g)
-{
-    return g.num_vertices();
-}
+inline Cost get(const EdgeCosts &map, const EdgeId &key) { return map[key]; }
 
-inline EdgeId out_degree(VertexId u, const Graph& g)
-{
-    return g.out_degree(u);
-}
-*/
+} // namespace grid
+} // namespace naex
+
+namespace boost {
+
+template <> struct graph_traits<naex::grid::Graph> {
+  typedef naex::grid::VertexId vertex_descriptor;
+  typedef naex::grid::VertexId vertices_size_type;
+  typedef naex::grid::EdgeId edge_descriptor;
+  typedef naex::grid::EdgeId edges_size_type;
+
+  typedef directed_tag directed_category;
+  typedef disallow_parallel_edge_tag edge_parallel_category;
+
+  typedef bidirectional_traversal_tag traversal_category;
+  typedef naex::grid::VertexIter vertex_iterator;
+  typedef naex::grid::EdgeIter out_edge_iterator;
+};
 
 template <> class property_traits<naex::grid::EdgeCosts> {
 public:
-  typedef EdgeId key_type;
-  typedef Cost value_type;
+  typedef naex::grid::EdgeId key_type;
+  typedef naex::grid::Cost value_type;
+  typedef naex::grid::Cost reference;
   typedef readable_property_map_tag category;
 };
 
-inline Cost get(const EdgeCosts &map, const EdgeId &key) { return map[key]; }
-
 } // namespace boost
-
-/*
-// Include dijkstra header once all used concepts are defined.
-// https://groups.google.com/g/boost-developers-archive/c/G2qArovLKzk
-// #include <boost/graph/dijkstra_shortest_paths.hpp>
-#include <boost/graph/dijkstra_shortest_paths_no_color_map.hpp>
-*/

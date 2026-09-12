@@ -1,9 +1,11 @@
 #pragma once
 
 #include "naex/hash.h"
+#include <algorithm>
 #include <cassert>
 #include <cmath>
 #include <cstdint>
+#include <limits>
 #include <unordered_map>
 #include <vector>
 
@@ -17,12 +19,6 @@ template <typename T> struct Point2 {
   Point2(T x, T y) : x(x), y(y) {}
   Point2();
 
-  Point2 &operator=(const Point2 &other) {
-    x = other.x;
-    y = other.y;
-    return *this;
-  }
-
   bool operator==(const Point2 &other) const {
     return x == other.x && y == other.y;
   }
@@ -30,14 +26,14 @@ template <typename T> struct Point2 {
   T x;
   T y;
 };
-template struct Point2<float>;
-template struct Point2<int16_t>;
-
 template <>
-Point2<float>::Point2()
+inline Point2<float>::Point2()
     : Point2(std::numeric_limits<float>::quiet_NaN(),
              std::numeric_limits<float>::quiet_NaN()) {}
-template <> Point2<int16_t>::Point2() : Point2(0, 0) {}
+template <> inline Point2<int16_t>::Point2() : Point2(0, 0) {}
+
+template struct Point2<float>;
+template struct Point2<int16_t>;
 
 typedef Point2<float> Point2f;
 typedef Point2<int16_t> Point2s;
@@ -60,17 +56,23 @@ typedef Point2Hasher<int16_t> Point2sHasher;
 typedef Point2sHasher CellHasher;
 
 struct Costs {
-  Costs(Cost c0 = std::numeric_limits<Cost>::quiet_NaN(),
-        Cost c1 = std::numeric_limits<Cost>::quiet_NaN(),
-        Cost c2 = std::numeric_limits<Cost>::quiet_NaN(),
-        Cost c3 = std::numeric_limits<Cost>::quiet_NaN())
-      : data{c0, c1, c2, c3} {}
-  Cost data[4];
+  /// Number of cost layers.
+  static constexpr size_t kSize = 4;
 
-  Costs &operator=(const Costs &other) {
-    std::copy(other.data, other.data + size(), data);
-    return *this;
-  }
+  Costs()
+      : data{std::numeric_limits<Cost>::quiet_NaN(),
+             std::numeric_limits<Cost>::quiet_NaN(),
+             std::numeric_limits<Cost>::quiet_NaN(),
+             std::numeric_limits<Cost>::quiet_NaN()} {}
+  /// Explicit so that a scalar (e.g. a vertex id) never silently converts to
+  /// Costs; see B1 in the 2026-09-12 review.
+  explicit Costs(Cost c0,
+                 Cost c1 = std::numeric_limits<Cost>::quiet_NaN(),
+                 Cost c2 = std::numeric_limits<Cost>::quiet_NaN(),
+                 Cost c3 = std::numeric_limits<Cost>::quiet_NaN())
+      : data{c0, c1, c2, c3} {}
+  Cost data[kSize];
+
   template <typename T> Costs &operator=(const std::vector<T> &costs) {
     for (size_t i = 0; i < size(); ++i) {
       data[i] = (i < costs.size()) ? costs[i]
@@ -80,7 +82,7 @@ struct Costs {
   }
   const Cost &operator[](size_t i) const { return data[i]; }
   Cost &operator[](size_t i) { return data[i]; }
-  size_t size() const { return 4; }
+  size_t size() const { return kSize; }
   Cost total() const {
     Cost total = 0;
     for (size_t i = 0; i < size(); ++i) {

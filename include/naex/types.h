@@ -1,7 +1,4 @@
-
-#ifndef NAEX_TYPES_H
-#define NAEX_TYPES_H
-
+#pragma once
 #include <Eigen/Dense>
 #include <memory>
 #include <mutex>
@@ -158,5 +155,3 @@ public:
 };
 
 } // namespace naex
-
-#endif // NAEX_TYPES_H
