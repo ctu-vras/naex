@@ -26,7 +26,6 @@ bool SphericalProjection::check(const sensor_msgs::msg::PointCloud2 &cloud) {
                 "Cloud size (%i, %i) inconsistent with model size (%i, %i).",
                 cloud.height, cloud.width, height_, width_);
   }
-  std::stringstream az_ss, el_ss;
   sensor_msgs::PointCloud2ConstIterator<float> x_it(cloud, "x");
   double residual_sum = 0.;
   Index n = 0;
@@ -52,45 +51,40 @@ bool SphericalProjection::check(const sensor_msgs::msg::PointCloud2 &cloud) {
         residual_sum += residual;
         ++n;
       }
-      continue;
-
-      if (residual <=
-          std::min(std::abs(azimuth_step_), std::abs(elevation_step_)) / 2.f) {
-        continue;
-      }
-
-      RCLCPP_WARN(rclcpp::get_logger("naex"),
-                  "Model direction [%.3f, %.3f, %.3f] "
-                  "inconsistent with data [%.3f, %.3f, %.3f], "
-                  "residual %.3f [deg].",
-                  pt_model(0), pt_model(1), pt_model(2), pt.x(), pt.y(), pt.z(),
-                  residual);
     }
+  }
+  if (n == 0) {
+    RCLCPP_WARN(rclcpp::get_logger("naex"),
+                "No valid points to check the model against.");
+    return false;
   }
   double mean_residual = residual_sum / n;
   if (mean_residual >
       std::min(std::abs(azimuth_step_), std::abs(elevation_step_)) / 2.) {
     RCLCPP_WARN(rclcpp::get_logger("naex"), "Mean angular error: %.3f [deg].",
-                degrees(residual_sum / n));
+                degrees(mean_residual));
   } else {
     RCLCPP_DEBUG(rclcpp::get_logger("naex"), "Mean angular error: %.3f [deg].",
-                 residual_sum / n);
+                 degrees(mean_residual));
   }
   return true;
 }
 
 void SphericalProjection::print_model_summary() {
   std::stringstream az_ss, el_ss;
-  for (uint32_t r = 0; r < height_; r += height_ / 8) {
+  const uint32_t r_step = std::max<uint32_t>(1, height_ / 8);
+  const uint32_t c_step = std::max<uint32_t>(1, width_ / 8);
+  for (uint32_t r = 0; r < height_; r += r_step) {
     if (r > 0) {
       az_ss << std::endl;
       el_ss << std::endl;
     }
-    for (uint32_t c = 0; c < width_; c += width_ / 8) {
+    for (uint32_t c = 0; c < width_; c += c_step) {
       Vec3 pt_model(0.f, 0.f, 0.f);
       unproject(Value(r), Value(c), pt_model(0), pt_model(1), pt_model(2));
-      Value az, el, r;
-      cartesian_to_spherical(pt_model(0), pt_model(1), pt_model(2), az, el, r);
+      Value az, el, radius;
+      cartesian_to_spherical(pt_model(0), pt_model(1), pt_model(2), az, el,
+                             radius);
       if (c > 0) {
         az_ss << " ";
         el_ss << " ";
@@ -103,65 +97,6 @@ void SphericalProjection::print_model_summary() {
               az_ss.str().c_str());
   RCLCPP_INFO(rclcpp::get_logger("naex"), "Elevation model sample:\n%s",
               el_ss.str().c_str());
-}
-
-bool SphericalProjection::fit_fast(const sensor_msgs::msg::PointCloud2 &cloud) {
-  Timer t;
-  assert(cloud.height >= 1);
-  assert(cloud.width >= 1);
-
-  const Index n_points = cloud.height * cloud.width;
-  sensor_msgs::PointCloud2ConstIterator<float> x_begin(cloud, "x");
-  sensor_msgs::PointCloud2ConstIterator<float> x_it = x_begin;
-  Index i_r0 = INVALID_INDEX;
-  Index i_r1 = INVALID_INDEX;
-  Index i_c0 = INVALID_INDEX;
-  Index i_c1 = INVALID_INDEX;
-  for (Index i = 0; i < n_points; ++i, ++x_it) {
-    if (!std::isfinite(x_it[0]) || !std::isfinite(x_it[1]) ||
-        !std::isfinite(x_it[2]))
-      continue;
-    if (i_r0 == INVALID_INDEX || i / cloud.width < i_r0 / cloud.width)
-      i_r0 = i;
-    if (i_r1 == INVALID_INDEX || i / cloud.width > i_r1 / cloud.width)
-      i_r1 = i;
-    if (i_c0 == INVALID_INDEX || i % cloud.width < i_c0 % cloud.width)
-      i_c0 = i;
-    if (i_c1 == INVALID_INDEX || i % cloud.width > i_c1 % cloud.width)
-      i_c1 = i;
-    if (i_r0 < i_r1 && i_c0 < i_c1)
-      break;
-  }
-  if (i_r0 == INVALID_INDEX)
-    return false;
-
-  height_ = cloud.height;
-  width_ = cloud.width;
-
-  Value elevation_0 =
-      elevation((x_begin + i_r0)[0], (x_begin + i_r0)[1], (x_begin + i_r0)[2]);
-  Value elevation_1 =
-      elevation((x_begin + i_r1)[0], (x_begin + i_r1)[1], (x_begin + i_r1)[2]);
-  Index r0 = i_r0 / width_;
-  Index r1 = i_r1 / width_;
-  elevation_step_ = (elevation_1 - elevation_0) / (r1 - r0);
-  elevation_start_ = elevation_0 - r0 * elevation_step_;
-
-  Value azimuth_0 = azimuth((x_begin + i_c0)[0], (x_begin + i_c0)[1]);
-  Value azimuth_1 = azimuth((x_begin + i_c1)[0], (x_begin + i_c1)[1]);
-  Index c0 = i_c0 % width_;
-  Index c1 = i_c1 % width_;
-  azimuth_step_ = (azimuth_1 - azimuth_0) / (c1 - c0);
-  azimuth_start_ = azimuth_0 - c0 * azimuth_step_;
-  RCLCPP_INFO(rclcpp::get_logger("naex"),
-              "Spherical model: "
-              "elevation difference %.3f between rows %i and %i, "
-              "azimuth difference %.3f between cols %i and %i "
-              "(%.6f s).",
-              elevation_1 - elevation_0, int(r0), int(r1),
-              azimuth_1 - azimuth_0, int(c0), int(c1), t.seconds_elapsed());
-
-  return true;
 }
 
 bool SphericalProjection::fit_robust(

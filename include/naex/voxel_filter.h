@@ -101,8 +101,6 @@ public:
   I z_{0};
 };
 
-template <typename I> using VoxelVec = std::vector<Voxel<I>>;
-
 template <typename I>
 using VoxelSet = std::unordered_set<Voxel<I>, typename Voxel<I>::Hash>;
 

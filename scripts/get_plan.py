@@ -2,8 +2,9 @@
 """Request a plan from the planner.
 
 Calls the nav_msgs/GetPlan service `get_plan`. Both start and goal positions
-may be NaN (the default), which invokes the exploration / go-home behaviour of
-the planner.
+may be NaN (the default): a NaN start uses the robot's current position, and
+a NaN goal invokes the exploration / go-home behaviour, but only with the
+legacy point-map `planner` node -- the `grid_planner` rejects a NaN goal.
 """
 
 from geometry_msgs.msg import PoseStamped

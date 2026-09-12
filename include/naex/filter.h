@@ -60,24 +60,6 @@ public:
   const char *type_name() const { return typeid(*this).name(); }
 };
 
-template <typename T> class ProcessorChain : public Processor<T> {
-public:
-  typedef std::vector<typename Processor<T>::Ptr> Processors;
-
-  explicit ProcessorChain(const Processors &processors)
-      : processors_(processors) {}
-  virtual ~ProcessorChain() = default;
-
-  void process(T &obj) override {
-    for (auto &p : processors_) {
-      p->process(obj);
-    }
-  }
-
-protected:
-  Processors processors_;
-};
-
 template <typename T> class FilterFromProcessor : public Filter<T> {
 public:
   explicit FilterFromProcessor(typename Processor<T>::Ptr processor)
@@ -91,21 +73,6 @@ public:
 
 protected:
   typename Processor<T>::Ptr processor_;
-};
-
-template <typename T> class ProcessorFromFilter : public Processor<T> {
-public:
-  explicit ProcessorFromFilter(typename Filter<T>::Ptr filter)
-      : filter_(filter) {}
-  virtual ~ProcessorFromFilter() = default;
-
-  void process(T &obj) override {
-    T in = obj;
-    filter_->filter(in, obj);
-  }
-
-protected:
-  typename Filter<T>::Ptr filter_;
 };
 
 } // namespace naex

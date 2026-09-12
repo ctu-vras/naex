@@ -63,14 +63,6 @@ def tf_to_pose(tf):
     return pose
 
 
-def tf_to_pose_stamped(tf):
-    tf = TransformStamped()
-    pose = PoseStamped()
-    pose.header = tf.header
-    pose.pose = tf_to_pose(tf.transform)
-    return pose
-
-
 def p2e(xh):
     x = xh[:-1, :]
     return x
@@ -128,8 +120,6 @@ class PathFollower(Node):
         self.goal_reached_angle = self.declare_parameter(
             "goal_reached_angle", 0.2
         ).value  # rad
-        self.use_path_theta = self.declare_parameter("use_path_theta", "last").value
-        assert self.use_path_theta in ("none", "last", "all")
         self.max_age = self.declare_parameter("max_age", 1.0).value  # s
         # Max. path distances, tail is consumed first by reached goals.
         self.max_path_dists = list(
@@ -200,13 +190,16 @@ class PathFollower(Node):
         self.path_traversed = []
         self.stuck_since = None
         self.idle_since = None
+        # Set on goal reached (path cleared normally), cleared once a new
+        # path is accepted; disarms the idle/backtracking timer so a
+        # completed mission does not look like an idle fault.
+        self.mission_complete = False
         # Acceleration limitation
         self.prev_time = None
         self.prev_speed = None
         self.prev_angular_rate = None
 
         self.cloud_lock = RLock()
-        self.cloud_msg = None
         self.cloud = None  # n-by-3 cloud position array
 
         # Everything may block on TF, so run the callbacks concurrently
@@ -361,6 +354,7 @@ class PathFollower(Node):
             self.clear_path()
             self.path_msg = msg
             self.path_received_time = self.now()
+            self.mission_complete = False
             if self.estimate_path_costs:
                 self.path_costs = self.compute_path_costs(self.path_msg.poses)
             self.next_path_msg = None
@@ -415,7 +409,6 @@ class PathFollower(Node):
         t = timer() - t
 
         with self.cloud_lock:
-            self.cloud_msg = msg
             self.cloud = cloud
             self.get_logger().debug(
                 "Cloud with %i points received, %i points kept (%.3f s)."
@@ -435,7 +428,7 @@ class PathFollower(Node):
         tf = numpify(pose)
         tf[:3, :3] = tf[:3, :3].T
         tf[:3, 3:] = -np.matmul(tf[:3, :3], tf[:3, 3:])
-        local_cloud = np.matmul(tf, self.cloud)
+        local_cloud = np.matmul(tf, cloud)
         obstacles = (local_cloud[:3, :] >= self.clearance_box[:, :1]).all(axis=0) & (
             local_cloud[:3, :] <= self.clearance_box[:, 1:]
         ).all(axis=0)
@@ -678,7 +671,7 @@ class PathFollower(Node):
             pose_msg = self.get_robot_pose(self.map_frame)
             cur_pos = numpify(pose_msg.position)
             prev_pos = (
-                numpify(self.path_traversed[0].position)
+                numpify(self.path_traversed[-1].position)
                 if len(self.path_traversed) > 0
                 else None
             )
@@ -688,7 +681,8 @@ class PathFollower(Node):
                 self.path_traversed = self.path_traversed[-3000:]
 
             if self.path_msg is None:
-                self.maybe_invoke_backtracking()
+                if not self.mission_complete:
+                    self.maybe_invoke_backtracking()
                 self.publish_smoothed(0.0, 0.0)
                 return
 
@@ -784,18 +778,8 @@ class PathFollower(Node):
                 throttle_duration_sec=1.0,
             )
 
-            # TODO: Use goal theta.
             # Angular displacement from [-pi, pi)
-            if (
-                True
-                or self.use_path_theta == "none"
-                or (self.use_path_theta == "last" and i < last)
-                or np.isnan(goal[2])
-            ):
-                angle = np.arctan2(local_goal[1, 0], local_goal[0, 0])
-            else:
-                goal_theta = goal[2]
-                self.get_logger().info("Using path theta: %.1f." % goal_theta)
+            angle = np.arctan2(local_goal[1, 0], local_goal[0, 0])
 
             # Clear path and stop if the goal has been reached.
             if (
@@ -811,6 +795,7 @@ class PathFollower(Node):
                     % (dist, self.goal_reached_dist, est_time, act_time)
                 )
                 self.clear_path()
+                self.mission_complete = True
                 if self.next_path_msg:
                     self.get_logger().info(
                         "Using stored subsequent path (%i poses)."

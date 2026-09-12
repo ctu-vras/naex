@@ -31,40 +31,12 @@ const sensor_msgs::msg::PointField *
 find_field(const sensor_msgs::msg::PointCloud2 &cloud, const std::string &name);
 
 template <typename T>
-void fill_field(const std::string &name, const T *it,
-                sensor_msgs::msg::PointCloud2 &cloud) {
-  size_t n = cloud.height * cloud.width;
-  sensor_msgs::PointCloud2Iterator<T> field_it(cloud, name);
-  const auto end = it + n;
-  for (; it != end; ++it, ++field_it) {
-    *field_it = *it;
-  }
-}
-
-template <typename T>
-void fill_const_field(const std::string &name, const T &value,
-                      sensor_msgs::msg::PointCloud2 &cloud) {
-  size_t n = cloud.height * cloud.width;
-  sensor_msgs::PointCloud2Iterator<T> field_it(cloud, name);
-  const auto end = field_it + n;
-  for (; field_it != end; ++field_it) {
-    *field_it = value;
-  }
-}
-
-/// Drop all fields and reset the point step.
-void reset_fields(sensor_msgs::msg::PointCloud2 &cloud);
-
-template <typename T>
 void append_field(const std::string &name, const uint32_t count,
-                  sensor_msgs::msg::PointCloud2 &cloud)
-//        const uint32_t offset = cloud.point_step)
-{
+                  sensor_msgs::msg::PointCloud2 &cloud) {
   typedef typename std::remove_reference<T>::type C;
   sensor_msgs::msg::PointField field;
   field.name = name;
   field.offset = cloud.point_step;
-  //        field.offset = offset;
   field.datatype = PointFieldTraits<C>::datatype();
   field.count = count;
   cloud.fields.emplace_back(field);
@@ -86,22 +58,12 @@ void append_normal_fields(sensor_msgs::msg::PointCloud2 &cloud) {
   append_field<T>("nz", 1, cloud);
 }
 
-void append_occupancy_fields(sensor_msgs::msg::PointCloud2 &cloud);
-
-void append_traversability_fields(sensor_msgs::msg::PointCloud2 &cloud);
-
-void append_planning_fields(sensor_msgs::msg::PointCloud2 &cloud);
-
 /// Set cloud size and (re)allocate the data buffer.
 void resize_cloud(sensor_msgs::msg::PointCloud2 &cloud, uint32_t height,
                   uint32_t width);
 
 /// Log an 8-by-8 sample of the azimuth and elevation of an organized cloud.
 void print_cloud_summary(const sensor_msgs::msg::PointCloud2 &cloud);
-
-/// Copy header, fields and per-point layout, but no data.
-void copy_cloud_metadata(const sensor_msgs::msg::PointCloud2 &input,
-                         sensor_msgs::msg::PointCloud2 &output);
 
 /**
  * Copy selected points.

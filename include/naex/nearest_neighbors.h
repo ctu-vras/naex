@@ -3,7 +3,6 @@
 #include <cmath>
 #include <flann/flann.hpp>
 #include <limits>
-#include <naex/array.h>
 #include <naex/buffer.h>
 #include <naex/types.h>
 #include <vector>
@@ -45,30 +44,6 @@ inline bool invalid_distance(long d) { return d == 0L; }
 template <typename I, typename D> inline bool valid_neighbor(I i, D d) {
   return !(invalid_index(i) && invalid_distance(d));
 }
-
-template <typename I, typename V> class NearestNeighborTraits {
-public:
-  I invalid_index() { return naex::invalid_index<I>(); }
-  V invalid_distance() { return naex::invalid_distance<V>(); }
-};
-
-template <typename I, typename V> class NearestNeighbors {
-public:
-  explicit NearestNeighbors(I n) : nn_(n), dist_(n) {}
-  std::vector<std::vector<I>> nn_;
-  std::vector<std::vector<V>> dist_;
-};
-
-template <typename I, typename V> class KNearestNeighbors {
-public:
-  KNearestNeighbors(I n, I k)
-      : nn_buf_(n * k), dist_buf_(n * k), nn_(nn_buf_.begin(), n, k),
-        dist_(dist_buf_.begin(), n, k) {}
-  std::vector<I> nn_buf_;
-  std::vector<V> dist_buf_;
-  flann::Matrix<I> nn_;
-  flann::Matrix<V> dist_;
-};
 
 /// k-NN (or capped radius) query against a 3-D L2 index.
 template <typename T> class Query {

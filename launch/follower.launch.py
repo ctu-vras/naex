@@ -20,7 +20,6 @@ def base_parameters(map_frame, odom_frame, robot_frame):
         "control_freq": 10.0,
         "goal_reached_dist": 0.3,
         "goal_reached_angle": INF,
-        "use_path_theta": "none",
         "max_age": 1.0,
         # Max. path distances, tail is consumed first by reached goals.
         # A higher value is used in the beginning to traverse across

@@ -190,8 +190,7 @@ rclcpp_components_register_node(traversability_component
   PLUGIN "naex::TraversabilityNode"
   EXECUTABLE traversability_node)
 
-# Spherical projection model estimation; needs neither FLANN nor LZ4, but
-# clouds.h pulls in geom.h, hence the tf2 headers.
+# Spherical projection model estimation; needs neither FLANN nor LZ4.
 add_executable(lidar_model src/lidar_model.cpp)
 target_include_directories(lidar_model PRIVATE
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>)

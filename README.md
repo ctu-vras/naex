@@ -411,7 +411,6 @@ backtrack over the traversed poses if no valid path is received for
 | `local_goal_dims` | string | `xy` (or `xyz`) |
 | `goal_reached_dist` | double | 0.2 m |
 | `goal_reached_angle` | double | 0.2 rad |
-| `use_path_theta` | string | `last` (`none`, `last`, `all`) |
 | `max_age` | double | 1.0 s |
 | `max_path_dist` | double[] | `[0.5]` m; the tail is consumed first by reached goals |
 | `look_ahead` | double | 1.0 m |
@@ -456,7 +455,9 @@ arrays `[xmin, xmax, ymin, ymax, zmin, zmax]`.
 
 - `get_plan.py` — one-shot client of the `get_plan` service. Parameters:
   `start`, `goal` (three floats, or a `"x,y,z"` string; NaN by default),
-  `tolerance` (32.0), `verbose` (false).
+  `tolerance` (32.0), `verbose` (false). A NaN goal invokes exploration /
+  go-home only with the legacy point-map `planner` node; `grid_planner`
+  rejects a NaN goal.
 - `mock_map_publisher.py`, `mock_tf_publisher.py`, `test_planner_client.py` —
   fixtures for `launch/test_planner.launch.py`.
 

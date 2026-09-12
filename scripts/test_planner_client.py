@@ -28,12 +28,13 @@ class TestPlannerClient(Node):
         # Get parameters
         self.start_x = self.get_parameter("start_x").get_parameter_value().double_value
         self.start_y = self.get_parameter("start_y").get_parameter_value().double_value
-        self.start_yaw = (
+        # start_yaw/goal_yaw are given in degrees (matching mock_tf_publisher.py).
+        self.start_yaw = math.radians(
             self.get_parameter("start_yaw").get_parameter_value().double_value
         )
         self.goal_x = self.get_parameter("goal_x").get_parameter_value().double_value
         self.goal_y = self.get_parameter("goal_y").get_parameter_value().double_value
-        self.goal_yaw = (
+        self.goal_yaw = math.radians(
             self.get_parameter("goal_yaw").get_parameter_value().double_value
         )
         self.test_delay = (
@@ -57,7 +58,6 @@ class TestPlannerClient(Node):
 
         # Wait for service and then run test
         self.timer = self.create_timer(1.0, self.check_service_and_test)
-        self.test_executed = False
 
         self.get_logger().info("Test planner client initialized")
         self.get_logger().info(
@@ -67,17 +67,16 @@ class TestPlannerClient(Node):
         self.get_logger().info(f"Waiting {self.test_delay}s before testing...")
 
     def check_service_and_test(self):
-        """Check if service is available and run test if not already executed"""
-        if not self.test_executed:
-            if self.get_plan_client.service_is_ready():
-                self.get_logger().info(
-                    "GetPlan service is ready, starting test in a moment..."
-                )
-                # Cancel the timer and start the test after delay
-                self.timer.cancel()
-                self.create_timer(self.test_delay, self.run_periodic_test)
-            else:
-                self.get_logger().info("Waiting for GetPlan service...")
+        """Check if the service is available and start the test once it is."""
+        if self.get_plan_client.service_is_ready():
+            self.get_logger().info(
+                "GetPlan service is ready, starting test in a moment..."
+            )
+            # Cancel the timer and start the test after delay
+            self.timer.cancel()
+            self.create_timer(self.test_delay, self.run_periodic_test)
+        else:
+            self.get_logger().info("Waiting for GetPlan service...")
 
     def create_pose_stamped(self, x, y, yaw=0.0):
         """Create a PoseStamped message"""
@@ -153,8 +152,10 @@ class TestPlannerClient(Node):
         goal_y_var = self.goal_y + random.uniform(-5.0, 5.0)
 
         request = GetPlan.Request()
-        request.start = self.create_pose_stamped(self.start_x, self.start_y, 0.0)
-        request.goal = self.create_pose_stamped(goal_x_var, goal_y_var, 0.0)
+        request.start = self.create_pose_stamped(
+            self.start_x, self.start_y, self.start_yaw
+        )
+        request.goal = self.create_pose_stamped(goal_x_var, goal_y_var, self.goal_yaw)
         request.tolerance = 0.5
 
         self.get_logger().info(
