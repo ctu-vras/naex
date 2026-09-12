@@ -208,6 +208,8 @@ Planner::Planner(rclcpp::Node::SharedPtr nh) : nh_(nh) {
       "frontier_max_neighbors", frontier_max_neighbors_);
   max_relative_dist_to_goal_ = nh_->declare_parameter<float>(
       "max_relative_dist_to_goal", max_relative_dist_to_goal_);
+  frontier_dist_from_goal_cost_ = nh_->declare_parameter<float>(
+      "frontier_dist_from_goal_cost", frontier_dist_from_goal_cost_);
 
   // Occupancy grid for the nav2 global costmap.
   publish_occupancy_grid_ = nh_->declare_parameter<bool>(
@@ -444,7 +446,12 @@ VertexId Planner::get_cheapest_frontier(const ShortestPaths &sp,
     });
     if (degree <= max_neighbors) {
       frontiers_grid.create_cell(frontiers_grid.point_to_cell(grid_.point(v)));
-      frontier_costs.push_back(sp.f_value(v));
+      // frontier_dist_from_goal_cost_ scales how much the euclidean distance
+      // to the goal (f_value(v) - path_cost(v), since A*'s f = g + h) counts
+      // against a frontier; 1.0 reproduces f_value(v) exactly.
+      frontier_costs.push_back(
+          sp.path_cost(v) + (sp.f_value(v) - sp.path_cost(v)) *
+                                frontier_dist_from_goal_cost_);
       traversable.push_back(is_traversable ? 1 : 0);
     }
   }

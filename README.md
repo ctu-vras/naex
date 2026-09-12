@@ -94,6 +94,7 @@ tested as *f* > 1e9 and not with `isfinite` after an A\* run
 | `frontier_min_dist` | double | 3.0 m |
 | `frontier_max_neighbors` | int | 5 |
 | `max_relative_dist_to_goal` | double | 2.0 |
+| `frontier_dist_from_goal_cost` | double | 1.0 (weight of a frontier's euclidean distance to the goal in its score; 1.0 reproduces the plain A\* *f* value, higher penalizes a frontier further from the goal more) |
 | `max_start_to_traversable_dist` | double | 2.0 m |
 | `publish_occupancy_grid` | bool | true |
 | `occupancy_grid_w`, `occupancy_grid_h` | int | 500 (cells; resolution is `cell_size`) |

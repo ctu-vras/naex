@@ -336,6 +336,13 @@ protected:
   /// A cost-optimal route longer than this multiple of the crow-flies
   /// distance makes the planner consider a frontier instead.
   float max_relative_dist_to_goal_{2.0};
+  /// Weight of the euclidean distance to the goal in a frontier's score:
+  /// get_cheapest_frontier() scores a cell as path_cost(v) + (f_value(v) -
+  /// path_cost(v)) * frontier_dist_from_goal_cost_. 1.0 (the default)
+  /// reproduces f_value(v) exactly, i.e. unchanged behaviour; > 1.0 makes a
+  /// frontier further from the goal look more expensive than plain f_value
+  /// would.
+  float frontier_dist_from_goal_cost_{1.0};
 
   // Transforms and frames
   std::shared_ptr<tf2_ros::Buffer> tf_{};
