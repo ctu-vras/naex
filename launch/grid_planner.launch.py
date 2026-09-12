@@ -16,6 +16,12 @@ def generate_launch_description():
                         "map_frame": "gps_odom",
                         "robot_frame": "base_link",
                         "max_cloud_age": 5.0,
+                        # Cloud callbacks must never park the single-threaded
+                        # executor on TF (P5): drop the frame after ~1 cloud
+                        # period instead.  tf_timeout applies to the
+                        # once-per-cycle robot pose lookup only.
+                        "cloud_tf_timeout": 0.05,
+                        "tf_timeout": 0.5,
                         "input_range": 5.0,
                         "cell_size": 0.4,
                         "forget_factor": 0.1,

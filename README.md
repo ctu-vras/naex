@@ -28,7 +28,8 @@ exploration behaviour. The last request is (by default) repeated periodically at
 | `cloud_levels` | int[] | `[]` (cloud *i* into cost layer *i*) |
 | `map_frame` | string | `map` |
 | `robot_frame` | string | `base_footprint` |
-| `tf_timeout` | double | 3.0 |
+| `tf_timeout` | double | 3.0 (robot pose lookup in `plan()`) |
+| `cloud_tf_timeout` | double | 0.05 (per-cloud lookup; late clouds are dropped) |
 | `max_cloud_age` | double | 5.0 |
 | `input_range` | double | 10.0 |
 | `cell_size` | double | 1.0 |
@@ -54,6 +55,14 @@ exploration behaviour. The last request is (by default) repeated periodically at
 Parameter types are strict: every floating-point parameter is a `double`
 (`tf_timeout: 3` is rejected, use `3.0`) and every integer one an `int`.
 
+The node spins on a single-threaded executor, so a blocking transform lookup in
+the cloud callback stalls the planning timer and the `get_plan` service as well.
+`cloud_tf_timeout` is therefore deliberately short: a cloud whose transform is
+not available within it is dropped (with a warning throttled to one per 2 s)
+instead of parked on. Raise it only if the log shows clouds being dropped while
+TF is healthy. `tf_timeout` is unrelated and still governs the single robot pose
+lookup per planning cycle.
+
 #### Subscribed topics
 
 - `input_cloud_0` … `input_cloud_<num_input_clouds - 1>`
@@ -61,7 +70,11 @@ Parameter types are strict: every floating-point parameter is a `double`
 
 #### Published topics
 
-- `map` [sensor_msgs/msg/PointCloud2] — the whole cost grid.
+- `map` [sensor_msgs/msg/PointCloud2] — the whole cost grid. Visualisation only,
+  and **only published while the topic has at least one subscriber**: building it
+  costs 20 B per cell every planning cycle (4.3 MB at 216 k cells). A subscriber
+  that joins late (rviz, or a `ros2 bag record` started after the node) misses
+  the cycles before it connected.
 - `path` [[nav_msgs/msg/Path](https://docs.ros2.org/latest/api/nav_msgs/msg/Path.html)] — planned path.
 - `planning_freq` [std_msgs/msg/Float32] — the frequency the planner replans at.
 

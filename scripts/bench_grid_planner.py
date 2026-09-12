@@ -41,7 +41,17 @@ goal_x, goal_y    Goal position in the map frame.
 subscribe_map     If true, subscribe to the planner's rviz-only ``map`` cloud
                   so that its publish cost (P4) is actually paid.  Set false to
                   measure the planner with no map consumer attached.
+tf_gap            If > 0, stop broadcasting ``map -> robot_frame`` for that many
+                  seconds, starting at ``tf_gap_at`` of the run (P5 acceptance
+                  test).  The report then carries the worst gap between
+                  consecutive ``path`` messages and the client latency observed
+                  inside the window.
+tf_gap_at         Fraction of ``duration`` at which the TF outage starts.
 output            Path to write the results to as JSON; "" or "none" disables.
+
+The ``path`` topic is always subscribed: with ``planning_freq > 0`` on the
+planner it is the only observable that shows the executor being parked, because
+a stalled executor cannot run the planning timer either.
 """
 
 import json
@@ -54,6 +64,7 @@ import time
 import numpy as np
 import rclpy
 from geometry_msgs.msg import TransformStamped
+from nav_msgs.msg import Path
 from nav_msgs.srv import GetPlan
 from rcl_interfaces.msg import Log
 from rclpy.callback_groups import ReentrantCallbackGroup
@@ -100,6 +111,8 @@ class BenchGridPlanner(Node):
         self.goal_x = self._p("goal_x", 0.0)
         self.goal_y = self._p("goal_y", 0.0)
         self.subscribe_map = self._p("subscribe_map", True)
+        self.tf_gap = self._p("tf_gap", 0.0)
+        self.tf_gap_at = self._p("tf_gap_at", 0.5)
         self.output = self._p("output", "")
 
         if self.goal_x == 0.0 and self.goal_y == 0.0:
@@ -119,6 +132,10 @@ class BenchGridPlanner(Node):
         )
         self.map_msgs = 0
         self.map_bytes = 0
+        self.path_times = []
+        self.create_subscription(
+            Path, "path", self.on_path, 2, callback_group=self.group
+        )
         if self.subscribe_map:
             self.create_subscription(
                 PointCloud2, "map", self.on_map, 1, callback_group=self.group
@@ -235,7 +252,25 @@ class BenchGridPlanner(Node):
         self.cloud_pub.publish(msg)
         self.published_points = count
 
+    def tf_gap_window(self):
+        """(start, end) of the TF outage in monotonic time, or None."""
+        if not (self.tf_gap > 0.0) or self.duration <= 0.0:
+            return None
+        start = self.start_time + self.tf_gap_at * self.duration
+        return (start, start + self.tf_gap)
+
+    def in_tf_gap(self, when=None):
+        window = self.tf_gap_window()
+        if window is None:
+            return False
+        when = time.monotonic() if when is None else when
+        return window[0] <= when < window[1]
+
     def publish_tf(self):
+        if self.in_tf_gap():
+            # P5 acceptance: the planner must drop clouds it cannot transform
+            # instead of parking the single-threaded executor on the lookup.
+            return
         t = TransformStamped()
         t.header.stamp = self.get_clock().now().to_msg()
         t.header.frame_id = self.map_frame
@@ -249,6 +284,10 @@ class BenchGridPlanner(Node):
     def on_map(self, msg):
         self.map_msgs += 1
         self.map_bytes += len(msg.data)
+
+    def on_path(self, msg):
+        del msg
+        self.path_times.append(time.monotonic())
 
     # --- node log scraping -------------------------------------------------
 
@@ -303,6 +342,7 @@ class BenchGridPlanner(Node):
         time.sleep(2.0 / max(self.cloud_rate, 0.01))
 
         latencies = []
+        req_starts = []
         poses = []
         period = 1.0 / max(self.request_rate, 0.01)
         t_end = self.start_time + self.duration if self.duration > 0 else None
@@ -325,16 +365,69 @@ class BenchGridPlanner(Node):
             recording = (time.monotonic() - self.start_time) >= self.warmup
             if recording:
                 latencies.append(dt)
+                req_starts.append(t0)
                 res = future.result()
                 poses.append(len(res.plan.poses) if res is not None else 0)
             sleep = period - (time.monotonic() - t0)
             if sleep > 0:
                 time.sleep(sleep)
 
-        self.report(latencies, poses, n_total)
+        self.report(latencies, poses, n_total, req_starts)
         return 0
 
-    def report(self, latencies, poses, n_total):
+    def tf_gap_report(self, latencies, req_starts):
+        """Worst path-message gap and worst client latency in the TF outage.
+
+        ``path`` messages are the planning timer's output, so the gap between
+        two of them is a direct measure of how long the single-threaded
+        executor was unavailable.  Two windows are reported: ``_in_tf_gap_s``
+        counts only what overlaps the outage itself, ``_from_tf_gap_s`` counts
+        everything from the start of the outage to the end of the run, which is
+        where the recovery cost shows up (clouds stamped inside the outage
+        still have no transform once broadcasting resumes, so each one costs a
+        full timeout).
+        """
+        window = self.tf_gap_window()
+        gaps = [
+            (b - a, a) for a, b in zip(self.path_times, self.path_times[1:])
+        ]
+        out = {
+            "tf_gap_s": float(self.tf_gap),
+            "path_msgs": len(self.path_times),
+            "path_gap_max_s": max((g for g, _ in gaps), default=float("nan")),
+            "path_gap_max_in_tf_gap_s": float("nan"),
+            "path_gap_max_from_tf_gap_s": float("nan"),
+            "latency_max_in_tf_gap_s": float("nan"),
+            "latency_max_from_tf_gap_s": float("nan"),
+            "requests_in_tf_gap": 0,
+        }
+        if window is None:
+            return out
+        start, end = window
+        out["tf_gap_start_s"] = start - self.start_time
+        out["tf_gap_end_s"] = end - self.start_time
+        # A gap counts if the interval it spans overlaps the outage window.
+        in_gap = [g for g, a in gaps if a < end and (a + g) > start]
+        if in_gap:
+            out["path_gap_max_in_tf_gap_s"] = max(in_gap)
+        after = [g for g, a in gaps if (a + g) > start]
+        if after:
+            out["path_gap_max_from_tf_gap_s"] = max(after)
+        lat = [
+            d
+            for d, t0 in zip(latencies, req_starts)
+            if t0 < end and (t0 + d) > start
+        ]
+        out["requests_in_tf_gap"] = len(lat)
+        if lat:
+            out["latency_max_in_tf_gap_s"] = max(lat)
+        lat_after = [d for d, t0 in zip(latencies, req_starts) if (t0 + d) > start]
+        if lat_after:
+            out["latency_max_from_tf_gap_s"] = max(lat_after)
+        return out
+
+    def report(self, latencies, poses, n_total, req_starts=None):
+        req_starts = req_starts if req_starts is not None else []
         qs = _quantiles(latencies, (0.5, 0.9, 1.0))
         perf_keys = (
             "cells",
@@ -386,6 +479,7 @@ class BenchGridPlanner(Node):
             "cloud_max": cloud_max,
             "node_mean": perf_mean,
             "node_max": perf_max,
+            "tf_gap": self.tf_gap_report(latencies, req_starts),
         }
         text = json.dumps(result, indent=2, sort_keys=True)
         self.get_logger().info("bench result:\n" + text)

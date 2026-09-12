@@ -133,6 +133,9 @@ public:
     assert(hasCell(c));
     return cell_to_id_.find(c)->second;
   }
+  /// CellId of @p c, or INVALID_CELL_ID if the cell does not exist.  One hash
+  /// lookup, and it never creates a cell (P3).
+  CellId findCell(const Cell &c) const;
 
   Cell pointToCell(const Point2f &p) const {
     return Cell(std::floor(p.x / cell_size_), std::floor(p.y / cell_size_));
@@ -189,8 +192,14 @@ protected:
   std::unordered_map<Cell, CellId, CellHasher> cell_to_id_;
 };
 
-/// Sentinel returned by nearestCell() when no cell was accepted.
+/// Sentinel returned by nearestCell() and Grid::findCell() when there is no
+/// such cell.
 inline constexpr CellId INVALID_CELL_ID = std::numeric_limits<CellId>::max();
+
+inline CellId Grid::findCell(const Cell &c) const {
+  const auto it = cell_to_id_.find(c);
+  return it == cell_to_id_.end() ? INVALID_CELL_ID : it->second;
+}
 
 /// True if @p layer is a valid index into Costs.
 inline bool isValidLayer(int layer) {
@@ -218,22 +227,50 @@ inline void fillLayer(Grid &grid, int layer, Cost cost) {
  * Set @p cost on @p layer of every existing cell whose centre lies within
  * @p radius of @p center (2-D Euclidean, boundary inclusive).
  *
- * Cells are never created.  Out-of-range layers are ignored.  Currently a full
- * grid pass; P3 replaces it with a bounding-box iteration, which must select
- * exactly the same cells (see the SidelobeDisc tests).
+ * Cells are never created.  Out-of-range layers are ignored.  Every cell that
+ * was written is appended to @p touched when that pointer is not null, so the
+ * caller can restore exactly those cells later instead of sweeping the whole
+ * grid (P3); the same cell may be appended more than once by overlapping discs,
+ * which is harmless because restoring is idempotent.
+ *
+ * Only the cell bounding box of the disc is walked: a cell whose centre is
+ * within @p radius of @p center has its centre inside
+ * [center - radius, center + radius], and pointToCell() is monotone, so the box
+ * corners bracket its index.  The distance test is the same expression as the
+ * former full-grid pass, hence the selected set is identical.
  */
 inline void applyDiscCost(Grid &grid, int layer, const Point2f &center,
-                          float radius, Cost cost) {
+                          float radius, Cost cost,
+                          std::vector<CellId> *touched = nullptr) {
   if (!isValidLayer(layer)) {
     return;
   }
-  const CellId n = static_cast<CellId>(grid.size());
-  for (CellId v = 0; v < n; ++v) {
-    const Point2f p = grid.point(v);
-    const float dx = p.x - center.x;
-    const float dy = p.y - center.y;
-    if (std::sqrt(dx * dx + dy * dy) <= radius) {
-      grid.costs(v)[static_cast<size_t>(layer)] = cost;
+  // A non-finite centre or radius selected nothing in the full-grid pass (every
+  // comparison against NaN is false); it must not reach the int16_t cast below.
+  if (!std::isfinite(center.x) || !std::isfinite(center.y) ||
+      !std::isfinite(radius)) {
+    return;
+  }
+  // int32 loop counters: the int16 cell range can be exhausted far from the
+  // origin, and lo > hi (nothing to do) must not become an infinite loop.
+  const Cell lo = grid.pointToCell({center.x - radius, center.y - radius});
+  const Cell hi = grid.pointToCell({center.x + radius, center.y + radius});
+  for (int32_t x = lo.x; x <= hi.x; ++x) {
+    for (int32_t y = lo.y; y <= hi.y; ++y) {
+      const CellId v =
+          grid.findCell(Cell(static_cast<int16_t>(x), static_cast<int16_t>(y)));
+      if (v == INVALID_CELL_ID) {
+        continue;
+      }
+      const Point2f p = grid.point(v);
+      const float dx = p.x - center.x;
+      const float dy = p.y - center.y;
+      if (std::sqrt(dx * dx + dy * dy) <= radius) {
+        grid.costs(v)[static_cast<size_t>(layer)] = cost;
+        if (touched) {
+          touched->push_back(v);
+        }
+      }
     }
   }
 }

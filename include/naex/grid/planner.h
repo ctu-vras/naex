@@ -191,6 +191,12 @@ public:
     robot_frame_ =
         nh_->declare_parameter<std::string>("robot_frame", robot_frame_);
     tf_timeout_ = nh_->declare_parameter<float>("tf_timeout", tf_timeout_);
+    // Cloud callbacks run on the only executor thread, so a long wait here
+    // stalls the planning timer and the get_plan service; drop the frame
+    // instead (P5).  Kept separate from tf_timeout_, which still governs the
+    // once-per-cycle robot pose lookup in plan().
+    cloud_tf_timeout_ =
+        nh_->declare_parameter<float>("cloud_tf_timeout", cloud_tf_timeout_);
 
     max_cloud_age_ =
         nh_->declare_parameter<float>("max_cloud_age", max_cloud_age_);
@@ -208,6 +214,12 @@ public:
     queue_size = std::max(1, queue_size);
     sensor_data_qos_ =
         nh_->declare_parameter<bool>("sensor_data_qos", sensor_data_qos_);
+
+    // Ad-hoc cost parameters.  Declared before checkInputParameters() because
+    // it rejects a cost field mapped onto the ad-hoc layer (P3's dirty-list
+    // clear assumes nothing else writes that layer).
+    adhoc_costs_ = nh_->declare_parameter("adhoc_costs", adhoc_costs_);
+    adhoc_layer_ = nh_->declare_parameter("adhoc_layer", adhoc_layer_);
 
     checkInputParameters(num_input_clouds);
 
@@ -236,10 +248,6 @@ public:
     goal_reached_dist_ =
         nh_->declare_parameter<float>("goal_reached_dist", goal_reached_dist_);
     mode_ = nh_->declare_parameter<int>("mode", mode_);
-
-    // Ad-hoc cost parameters
-    adhoc_costs_ = nh_->declare_parameter("adhoc_costs", adhoc_costs_);
-    adhoc_layer_ = nh_->declare_parameter("adhoc_layer", adhoc_layer_);
 
     // Sidelobes strategy parameters
     sidelobes_offset_distance_ = nh_->declare_parameter(
@@ -329,9 +337,9 @@ public:
     planning_timer_ = nh_->create_wall_timer(
         std::chrono::duration<double>(1.0 / planning_freq_),
         [this]() { this->planningTimer(); });
-    auto msg = std::make_shared<std_msgs::msg::Float32>();
-    msg->data = planning_freq_;
-    planning_freq_pub_->publish(*msg);
+    std_msgs::msg::Float32 msg;
+    msg.data = planning_freq_;
+    planning_freq_pub_->publish(msg);
     RCLCPP_WARN(nh_->get_logger(), "Planning started.");
   }
 
@@ -347,9 +355,9 @@ public:
       planning_timer_->cancel();
     }
     path_pub_->publish(emptyPath());
-    auto msg = std::make_shared<std_msgs::msg::Float32>();
-    msg->data = 0;
-    planning_freq_pub_->publish(*msg);
+    std_msgs::msg::Float32 msg;
+    msg.data = 0;
+    planning_freq_pub_->publish(msg);
     RCLCPP_WARN(nh_->get_logger(), "Planning stopped.");
   }
 
@@ -526,12 +534,23 @@ public:
     }
   }
 
+  /**
+   * Publish the rviz-only "map" cloud, if anybody is listening.
+   *
+   * Building it costs 20 B per cell (4.3 MB at 216 k cells) every cycle, so it
+   * is skipped when the topic has no subscriber (P4).  Consequence: a late
+   * joining subscriber (rviz, or a `ros2 bag record` started after the fact)
+   * misses the cycles before it connected.
+   */
   void createAndPublishMapCloud(const ShortestPaths &sp) {
-    sensor_msgs::msg::PointCloud2 cloud;
-    cloud.header.frame_id = map_frame_;
-    cloud.header.stamp = nh_->get_clock()->now();
-    fillMapCloud(cloud, grid_, sp.pathCosts());
-    map_pub_->publish(cloud);
+    if (map_pub_->get_subscription_count() == 0) {
+      return;
+    }
+    auto cloud = std::make_unique<sensor_msgs::msg::PointCloud2>();
+    cloud->header.frame_id = map_frame_;
+    cloud->header.stamp = nh_->get_clock()->now();
+    fillMapCloud(*cloud, grid_, sp.pathCosts());
+    map_pub_->publish(std::move(cloud));
   }
 
   /**
@@ -590,14 +609,31 @@ public:
   void clearMap(nav2_msgs::srv::ClearEntireCostmap::Request::SharedPtr,
                 nav2_msgs::srv::ClearEntireCostmap::Response::SharedPtr) {
     grid_.clear();
+    // Every CellId is invalidated, so the ad-hoc dirty list cannot be replayed.
+    adhoc_dirty_.clear();
     RCLCPP_WARN(nh_->get_logger(), "Map cleared.");
   }
 
+  /**
+   * Restore the ad-hoc layer of every cell the last apply touched.
+   *
+   * Equivalent to fillLayer() over the whole grid only because nothing else
+   * ever writes adhoc_layer_: cells created since the last apply already carry
+   * default_costs_[adhoc_layer_] (Grid::createCell), and a cloud cost field
+   * mapped onto the ad-hoc layer is rejected by checkInputParameters().  Every
+   * operation that invalidates CellIds (clearMap(), later P6 eviction) must
+   * drop the dirty list.
+   */
   void clearAdHocLayer() {
     if (!isValidLayer(adhoc_layer_)) {
+      adhoc_dirty_.clear();
       return;
     }
-    fillLayer(grid_, adhoc_layer_, default_costs_[adhoc_layer_]);
+    const Cost def = default_costs_[adhoc_layer_];
+    for (const CellId v : adhoc_dirty_) {
+      grid_.costs(v)[static_cast<size_t>(adhoc_layer_)] = def;
+    }
+    adhoc_dirty_.clear();
   }
 
   void applySidelobesCosts(const Vec3 &robot_pos, float robot_yaw) {
@@ -613,7 +649,7 @@ public:
                            robot_pos.y() + sidelobes_offset_distance_ *
                                                std::sin(robot_yaw + angle_rad));
       applyDiscCost(grid_, adhoc_layer_, center, sidelobes_radius_,
-                    sidelobes_cost_);
+                    sidelobes_cost_, &adhoc_dirty_);
     }
   }
 
@@ -633,10 +669,14 @@ public:
     if (!planSafe(req, res)) {
       return;
     }
-    path_pub_->publish(res->plan);
+    // Move the path out instead of copying it into the publisher (P4); the
+    // response is local to this callback and is not used afterwards.
+    auto path = std::make_unique<nav_msgs::msg::Path>(std::move(res->plan));
+    const size_t num_poses = path->poses.size();
+    path_pub_->publish(std::move(path));
     RCLCPP_INFO(nh_->get_logger(),
                 "Planning robot %s path (%lu poses) in map %s: %.3f s.",
-                robot_frame_.c_str(), res->plan.poses.size(),
+                robot_frame_.c_str(), num_poses,
                 map_frame_.c_str(), t.seconds_elapsed());
   }
 
@@ -653,9 +693,10 @@ public:
 
     Timer t_tf;
     geometry_msgs::msg::TransformStamped cloud_to_map;
+    // Short timeout on purpose (P5): this runs on the only executor thread.
     cloud_to_map = tf_->lookupTransform(
         map_frame_, input->header.frame_id, input->header.stamp,
-        rclcpp::Duration::from_seconds(tf_timeout_));
+        rclcpp::Duration::from_seconds(cloud_tf_timeout_));
     const double tf_seconds = t_tf.seconds_elapsed();
 
     Eigen::Isometry3f transform(tf2::transformToEigen(cloud_to_map.transform));
@@ -703,10 +744,14 @@ public:
     try {
       receiveCloud(input, cloud_index);
     } catch (const tf2::TransformException &ex) {
-      RCLCPP_ERROR(nh_->get_logger(),
-                   "Could not transform input cloud from %s to %s: %s.",
-                   input->header.frame_id.c_str(), map_frame_.c_str(),
-                   ex.what());
+      // Expected whenever TF is late: the frame is dropped rather than waited
+      // for (P5).  Throttled so a persistent TF outage stays visible without
+      // flooding the log at the cloud rate.
+      RCLCPP_WARN_THROTTLE(nh_->get_logger(), *nh_->get_clock(), 2000,
+                           "Dropping input cloud from %s: no transform to %s "
+                           "within %.3f s: %s.",
+                           input->header.frame_id.c_str(), map_frame_.c_str(),
+                           cloud_tf_timeout_, ex.what());
       return;
     } catch (const std::runtime_error &ex) {
       RCLCPP_ERROR(nh_->get_logger(), "Input cloud processing failed: %s",
@@ -776,6 +821,17 @@ protected:
            << " is out of range [0, " << Costs::kSize << ").";
         throw std::runtime_error(ss.str());
       }
+      // P3: clearAdHocLayer() restores only the cells the last apply touched,
+      // which is equivalent to a full sweep only if no other writer touches
+      // that layer.
+      if (!adhoc_costs_.empty() &&
+          cloud_levels_[j] == static_cast<long int>(adhoc_layer_)) {
+        std::stringstream ss;
+        ss << "cloud_levels[" << j << "] = " << cloud_levels_[j]
+           << " collides with adhoc_layer; the ad-hoc layer must not be "
+              "written by an input cost field.";
+        throw std::runtime_error(ss.str());
+      }
     }
   }
 
@@ -785,7 +841,12 @@ protected:
   // Transforms and frames
   std::shared_ptr<tf2_ros::Buffer> tf_{};
   std::shared_ptr<tf2_ros::TransformListener> tf_sub_;
+  /// Timeout of the once-per-cycle robot pose lookup in plan().
   float tf_timeout_{3.0};
+  /// Timeout of the per-cloud lookup in receiveCloud(); short on purpose, see
+  /// P5.  ~1 cloud period at 20 Hz, so a late transform drops one frame rather
+  /// than parking the single-threaded executor.
+  float cloud_tf_timeout_{0.05};
   std::string map_frame_{"map"};
   std::string robot_frame_{"base_footprint"};
 
@@ -834,6 +895,9 @@ protected:
   // Ad-hoc costs
   std::vector<std::string> adhoc_costs_{};
   int adhoc_layer_{3};
+  /// Cells whose ad-hoc layer the last applyAdHocCosts() wrote, so that
+  /// clearAdHocLayer() restores those instead of sweeping the grid (P3).
+  std::vector<CellId> adhoc_dirty_{};
 
   // Instrumentation (see PlanTimings); written by plan()/planSafe() only.
   PlanTimings plan_timings_{};

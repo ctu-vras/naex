@@ -8,6 +8,7 @@
 #include <cmath>
 #include <cstdlib>
 #include <limits>
+#include <random>
 #include <set>
 #include <utility>
 #include <vector>
@@ -292,6 +293,188 @@ TEST(SidelobeDisc, ProductionSizedLobeHitsTwelveCells) {
       {-1, -2}, {0, -2}, {-1, 1}, {0, 1}};   // |cx| = 0.2, |cy| = 0.6
   EXPECT_EQ(affected.size(), 12u);
   EXPECT_EQ(affected, expected);
+}
+
+namespace {
+
+// Reference implementation of applyDiscCost(): the full-grid pass P3 replaced.
+// Kept verbatim so the bounding-box walk can be compared against it cell by
+// cell on random grids.
+void referenceApplyDiscCost(Grid &grid, int layer, const Point2f &center,
+                            float radius, Cost cost,
+                            std::vector<naex::grid::CellId> *touched) {
+  if (!naex::grid::isValidLayer(layer)) {
+    return;
+  }
+  const naex::grid::CellId n =
+      static_cast<naex::grid::CellId>(grid.size());
+  for (naex::grid::CellId v = 0; v < n; ++v) {
+    const Point2f p = grid.point(v);
+    const float dx = p.x - center.x;
+    const float dy = p.y - center.y;
+    if (std::sqrt(dx * dx + dy * dy) <= radius) {
+      grid.costs(v)[static_cast<size_t>(layer)] = cost;
+      if (touched) {
+        touched->push_back(v);
+      }
+    }
+  }
+}
+
+}  // namespace
+
+TEST(SidelobeDisc, SparseGridOnlyTouchesExistingCells) {
+  // 0.4 m cells covering [-2, 2) in both axes, with (0, 0) -- the cell the disc
+  // is centred on -- deliberately missing.
+  Grid grid(0.4f, 1.f, Costs(0.f, 0.f, 0.f, 0.f));
+  for (int16_t x = -5; x <= 4; ++x) {
+    for (int16_t y = -5; y <= 4; ++y) {
+      if (x == 0 && y == 0) {
+        continue;
+      }
+      grid.cellId(Cell(x, y));
+    }
+  }
+  const size_t size_before = grid.size();
+  std::vector<naex::grid::CellId> dirty;
+  naex::grid::applyDiscCost(grid, 3, Point2f(0.f, 0.f), 0.81f, 10.f, &dirty);
+  EXPECT_EQ(grid.size(), size_before) << "the hole must not be created";
+  EXPECT_FALSE(grid.hasCell(Cell(0, 0)));
+
+  std::set<std::pair<int, int>> affected;
+  for (naex::grid::CellId v = 0; v < grid.size(); ++v) {
+    if (grid.costs(v)[3] == 10.f) {
+      affected.insert({grid.cell(v).x, grid.cell(v).y});
+    }
+  }
+  // ProductionSizedLobeHitsTwelveCells' set minus the missing (0, 0).
+  const std::set<std::pair<int, int>> expected = {
+      {-1, -1}, {-1, 0}, {0, -1},
+      {-2, -1}, {-2, 0}, {1, -1}, {1, 0},
+      {-1, -2}, {0, -2}, {-1, 1}, {0, 1}};
+  EXPECT_EQ(affected, expected);
+  EXPECT_EQ(dirty.size(), expected.size());
+}
+
+TEST(SidelobeDisc, DirtyListRestoresExactly) {
+  // Distinct per-cell values on layer 3 stand in for "anything but the
+  // default"; after the dirty-list clear every cell must be back at the
+  // default and no cell outside the two discs may have been written at all.
+  Grid grid = makeDenseGrid(10, 0.4f);
+  const Cost kDefault = 0.25f;
+  for (naex::grid::CellId v = 0; v < grid.size(); ++v) {
+    grid.costs(v)[3] = kDefault;
+    grid.costs(v)[2] = static_cast<Cost>(v);
+  }
+  std::vector<Cost> before;
+  for (naex::grid::CellId v = 0; v < grid.size(); ++v) {
+    before.push_back(grid.costs(v)[2]);
+  }
+
+  std::vector<naex::grid::CellId> dirty;
+  naex::grid::applyDiscCost(grid, 3, Point2f(1.0f, 1.0f), 0.81f, 10.f, &dirty);
+  naex::grid::applyDiscCost(grid, 3, Point2f(1.2f, 1.0f), 0.81f, 7.f, &dirty);
+  ASSERT_FALSE(dirty.empty());
+  // The discs overlap, so the dirty list holds duplicates; restoring twice is
+  // idempotent, which is exactly what the planner relies on.
+  const std::set<naex::grid::CellId> unique(dirty.begin(), dirty.end());
+  EXPECT_LT(unique.size(), dirty.size()) << "the two discs must overlap";
+
+  size_t written = 0;
+  for (naex::grid::CellId v = 0; v < grid.size(); ++v) {
+    if (grid.costs(v)[3] != kDefault) {
+      ++written;
+      EXPECT_EQ(unique.count(v), 1u) << "cell " << v << " written but not dirty";
+    }
+  }
+  EXPECT_EQ(written, unique.size());
+
+  for (const naex::grid::CellId v : dirty) {
+    grid.costs(v)[3] = kDefault;
+  }
+  for (naex::grid::CellId v = 0; v < grid.size(); ++v) {
+    EXPECT_FLOAT_EQ(grid.costs(v)[3], kDefault) << "cell " << v;
+    EXPECT_FLOAT_EQ(grid.costs(v)[2], before[v]) << "other layer touched";
+  }
+}
+
+TEST(SidelobeDisc, FarFromOriginDoesNotWrap) {
+  // Cell index 30000 at cell_size 0.4, i.e. close to the int16_t limit: the
+  // bounding box must not wrap around, and the result must equal the full scan.
+  const float kCenter = 12000.0f;
+  Grid grid(0.4f, 1.f, Costs(0.f, 0.f, 0.f, 0.f));
+  Grid reference(0.4f, 1.f, Costs(0.f, 0.f, 0.f, 0.f));
+  for (int32_t x = 29995; x <= 30005; ++x) {
+    for (int32_t y = -5; y <= 5; ++y) {
+      grid.cellId(Cell(static_cast<int16_t>(x), static_cast<int16_t>(y)));
+      reference.cellId(Cell(static_cast<int16_t>(x), static_cast<int16_t>(y)));
+    }
+  }
+  ASSERT_EQ(grid.pointToCell({kCenter, 0.f}).x, 30000);
+
+  std::vector<naex::grid::CellId> dirty;
+  naex::grid::applyDiscCost(grid, 3, Point2f(kCenter, 0.f), 0.81f, 10.f,
+                            &dirty);
+  referenceApplyDiscCost(reference, 3, Point2f(kCenter, 0.f), 0.81f, 10.f,
+                         nullptr);
+  ASSERT_EQ(grid.size(), reference.size());
+  for (naex::grid::CellId v = 0; v < grid.size(); ++v) {
+    EXPECT_FLOAT_EQ(grid.costs(v)[3], reference.costs(v)[3])
+        << "cell (" << grid.cell(v).x << ", " << grid.cell(v).y << ")";
+  }
+  EXPECT_FALSE(dirty.empty());
+}
+
+TEST(SidelobeDisc, MatchesBruteForceOnRandomGrid) {
+  // The bounding-box walk must select bit for bit the same cells as the
+  // full-grid pass it replaces, on a sparse grid with holes, for a range of
+  // centres and radii (including degenerate ones).
+  std::mt19937 rng(12345u);
+  std::uniform_real_distribution<float> coord(-6.f, 6.f);
+  std::uniform_real_distribution<float> radius(0.f, 2.5f);
+  std::bernoulli_distribution present(0.7);
+
+  Grid grid(0.4f, 1.f, Costs(0.f, 0.f, 0.f, 0.f));
+  Grid reference(0.4f, 1.f, Costs(0.f, 0.f, 0.f, 0.f));
+  for (int16_t x = -20; x <= 20; ++x) {
+    for (int16_t y = -20; y <= 20; ++y) {
+      if (!present(rng)) {
+        continue;
+      }
+      grid.cellId(Cell(x, y));
+      reference.cellId(Cell(x, y));
+    }
+  }
+  ASSERT_GT(grid.size(), 800u);
+  ASSERT_EQ(grid.size(), reference.size());
+  const size_t size_before = grid.size();
+
+  for (int trial = 0; trial < 200; ++trial) {
+    const Point2f center(coord(rng), coord(rng));
+    const float r = radius(rng);
+    const Cost cost = static_cast<Cost>(trial);
+    std::vector<naex::grid::CellId> dirty;
+    std::vector<naex::grid::CellId> ref_dirty;
+    naex::grid::applyDiscCost(grid, 3, center, r, cost, &dirty);
+    referenceApplyDiscCost(reference, 3, center, r, cost, &ref_dirty);
+    ASSERT_EQ(grid.size(), size_before) << "no cell may be created";
+    ASSERT_EQ(dirty, ref_dirty)
+        << "trial " << trial << " centre (" << center.x << ", " << center.y
+        << ") radius " << r;
+    for (naex::grid::CellId v = 0; v < grid.size(); ++v) {
+      ASSERT_FLOAT_EQ(grid.costs(v)[3], reference.costs(v)[3])
+          << "trial " << trial << ", cell " << v;
+    }
+  }
+
+  // Degenerate inputs selected nothing before and must select nothing now.
+  const float kNaNf = std::numeric_limits<float>::quiet_NaN();
+  std::vector<naex::grid::CellId> dirty;
+  naex::grid::applyDiscCost(grid, 3, Point2f(0.f, 0.f), -1.f, 99.f, &dirty);
+  naex::grid::applyDiscCost(grid, 3, Point2f(kNaNf, 0.f), 1.f, 99.f, &dirty);
+  naex::grid::applyDiscCost(grid, 3, Point2f(0.f, 0.f), kNaNf, 99.f, &dirty);
+  EXPECT_TRUE(dirty.empty());
+  EXPECT_EQ(grid.size(), size_before);
 }
 
 TEST(NearestCell, EmptyPredicateAndTieBreak) {

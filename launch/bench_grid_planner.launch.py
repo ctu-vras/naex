@@ -6,6 +6,12 @@ Nothing here needs a display.  The benchmark node prints a single
 ``BENCH_RESULT {...}`` JSON line when it is done and, if ``output`` is set,
 writes the same JSON to that file.
 
+P5 acceptance run (TF outage halfway through, with the planning timer on so
+that ``path`` messages exist)::
+
+    ros2 launch naex bench_grid_planner.launch.py \\
+        field_size:=200.0 planning_freq:=1.0 tf_gap:=2.0
+
 ``bench_script`` defaults to the installed script.  Before the CMake install
 rule is integrated (see scratchpad/cmake_additions_perf.md) it can be pointed
 at the source tree:
@@ -44,12 +50,23 @@ _ARGS = {
     "duration": "30.0",
     "warmup": "3.0",
     "subscribe_map": "true",
+    # P5 acceptance: stop broadcasting map -> base_link for tf_gap seconds,
+    # starting at tf_gap_at of the run.  Needs planning_freq > 0, otherwise no
+    # path message is published and the executor stall is invisible.
+    "tf_gap": "0.0",
+    "tf_gap_at": "0.5",
     # "debug" also emits the per-cloud "perf cloud[i]" line (TF + point loop).
     "log_level": "info",
     "output": "none",
     # Planner.
     "cell_size": "0.4",
     "neighborhood": "8",
+    # 0 keeps every measured cycle request-driven; > 0 also runs the planning
+    # timer, which is what publishes the "path" topic the tf_gap run measures.
+    "planning_freq": "0.0",
+    # Baseline values on purpose: the production launch file sets 0.5 / 0.05.
+    "tf_timeout": "3.0",
+    "cloud_tf_timeout": "0.05",
 }
 
 
@@ -100,10 +117,10 @@ def generate_launch_description():
                 "max_costs": [float("nan")],
                 "default_costs": [0.5],
                 "neighborhood": 8,
-                # No automatic re-planning: every measured cycle is driven by
-                # a get_plan request, so client latency and the node-side
-                # summary line describe the same cycle.
-                "planning_freq": 0.0,
+                # Re-planning is off by default (planning_freq launch arg):
+                # every measured cycle is then driven by a get_plan request, so
+                # client latency and the node-side summary line describe the
+                # same cycle.
                 "num_input_clouds": 1,
                 "input_queue_size": 2,
                 "start_on_request": False,
@@ -121,6 +138,15 @@ def generate_launch_description():
                 "cell_size": ParameterValue(cfg["cell_size"], value_type=float),
                 "neighborhood": ParameterValue(
                     cfg["neighborhood"], value_type=int
+                ),
+                "planning_freq": ParameterValue(
+                    cfg["planning_freq"], value_type=float
+                ),
+                "tf_timeout": ParameterValue(
+                    cfg["tf_timeout"], value_type=float
+                ),
+                "cloud_tf_timeout": ParameterValue(
+                    cfg["cloud_tf_timeout"], value_type=float
                 ),
             },
         ],
@@ -153,6 +179,10 @@ def generate_launch_description():
             ["warmup:=", cfg["warmup"]],
             "-p",
             ["subscribe_map:=", cfg["subscribe_map"]],
+            "-p",
+            ["tf_gap:=", cfg["tf_gap"]],
+            "-p",
+            ["tf_gap_at:=", cfg["tf_gap_at"]],
             "-p",
             ["output:=", cfg["output"]],
         ],
