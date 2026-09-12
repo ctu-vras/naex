@@ -48,8 +48,24 @@ template <typename T> struct Point2Hasher {
   }
 };
 
+/**
+ * Perfect hash for a Cell (P10): the two int16_t coordinates are packed into
+ * the low 32 bits, so distinct cells never collide and the hash is two shifts
+ * and an or instead of two std::hash calls plus hash_combine.
+ *
+ * libstdc++ reduces modulo a prime bucket count, so neighbouring cells in y
+ * land in neighbouring buckets, which is what the grid inserts in bulk.
+ */
+template <> struct Point2Hasher<int16_t> {
+  std::size_t operator()(const Point2<int16_t> &v) const {
+    return (static_cast<std::size_t>(static_cast<uint16_t>(v.x)) << 16) |
+           static_cast<std::size_t>(static_cast<uint16_t>(v.y));
+  }
+};
+
 template struct Point2Hasher<float>;
-template struct Point2Hasher<int16_t>;
+// No explicit instantiation of Point2Hasher<int16_t>: it is explicitly
+// specialized above.
 
 typedef Point2Hasher<float> Point2fHasher;
 typedef Point2Hasher<int16_t> Point2sHasher;
@@ -99,6 +115,97 @@ struct Costs {
 inline constexpr CellId INVALID_CELL_ID = std::numeric_limits<CellId>::max();
 
 /**
+ * Number of neighbour slots per cell in the flat neighbour table (P2).
+ *
+ * Always 8, also for the 4-neighbourhood: neighbor8(c, 2 * i) == neighbor4(c,
+ * i), so the 4-connected search reads only the even slots and one table serves
+ * both neighbourhoods.
+ */
+inline constexpr size_t kNbrStride = 8;
+
+/// The i-th 4-neighbour of @p source (0:+x, 1:+y, 2:-x, 3:-y).
+inline Cell neighbor4(const Cell &source, int i) {
+  Cell target = source;
+  switch (i) {
+  case 0:
+    target.x += 1;
+    break;
+  case 1:
+    target.y += 1;
+    break;
+  case 2:
+    target.x -= 1;
+    break;
+  case 3:
+    target.y -= 1;
+    break;
+  default:
+    assert(false);
+  }
+  return target;
+}
+
+/**
+ * The i-th 8-neighbour of @p source: 0:+x, 1:+x+y, 2:+y, 3:-x+y, 4:-x, 5:-x-y,
+ * 6:-y, 7:+x-y.
+ *
+ * The ordering is antipodal, i.e. neighbor8(neighbor8(c, i), (i + 4) & 7) == c,
+ * which is what lets the neighbour table patch the reverse link of a new cell
+ * without a second lookup.
+ */
+inline Cell neighbor8(const Cell &source, int i) {
+  Cell target = source;
+  switch (i) {
+  case 0:
+    target.x += 1;
+    break;
+  case 1:
+    target.x += 1;
+    target.y += 1;
+    break;
+  case 2:
+    target.y += 1;
+    break;
+  case 3:
+    target.x -= 1;
+    target.y += 1;
+    break;
+  case 4:
+    target.x -= 1;
+    break;
+  case 5:
+    target.x -= 1;
+    target.y -= 1;
+    break;
+  case 6:
+    target.y -= 1;
+    break;
+  case 7:
+    target.x += 1;
+    target.y -= 1;
+    break;
+  default:
+    assert(false);
+  }
+  return target;
+}
+
+/**
+ * Length of the i-th 8-neighbour step in cells (P2).
+ *
+ * std::sqrt is not constexpr before C++26, hence the literal; Graph.Distance8
+ * pins that it rounds to the same float as std::sqrt(2.f).
+ */
+inline constexpr Cost kDist8[kNbrStride] = {
+    1.f, 1.41421356237309504880f, 1.f, 1.41421356237309504880f,
+    1.f, 1.41421356237309504880f, 1.f, 1.41421356237309504880f};
+
+inline Cost distance8(int i) {
+  assert(i >= 0 && i < 8);
+  return kDist8[i];
+}
+
+/**
  * Result of a Grid compaction (Grid::eraseCells(), Grid::evictOutside()).
  *
  * This is the contract every holder of a CellId must honour (the planner's
@@ -146,11 +253,20 @@ public:
   bool hasCell(const Cell &c) const {
     return cell_to_id_.find(c) != cell_to_id_.end();
   }
+  /**
+   * Append a cell that does not exist yet, wiring it into the neighbour table.
+   *
+   * One hash insert plus the 8 lookups of the neighbour resolution; the reverse
+   * links of the neighbours found are patched in place, so the table stays
+   * exact without ever being rebuilt (P2).
+   */
   void createCell(const Cell &c) {
-    cell_to_id_[c] = size();
-    id_to_cell_.push_back(c);
-    id_to_costs_.push_back(default_costs_);
-    ++version_;
+    const auto res = cell_to_id_.try_emplace(c, static_cast<CellId>(size()));
+    assert(res.second && "createCell called on an existing cell");
+    if (!res.second) {
+      return;
+    }
+    appendCell(c, res.first->second);
   }
 
   const Cell &cell(const CellId &id) const {
@@ -163,11 +279,18 @@ public:
   }
   Point2f point(const CellId &id) const { return cellToPoint(cell(id)); }
 
+  /**
+   * CellId of @p c, creating the cell if it does not exist.
+   *
+   * One hash lookup on a hit and one insert on a miss (P10); the pre-P10
+   * version cost two lookups on a hit and three on a miss.
+   */
   CellId &cellId(const Cell &c) {
-    if (!hasCell(c)) {
-      createCell(c);
+    const auto res = cell_to_id_.try_emplace(c, static_cast<CellId>(size()));
+    if (res.second) {
+      appendCell(c, res.first->second);
     }
-    return cell_to_id_[c];
+    return res.first->second;
   }
   const CellId &cellId(const Cell &c) const {
     assert(hasCell(c));
@@ -217,7 +340,39 @@ public:
     id_to_costs_.clear();
     id_to_cell_.clear();
     cell_to_id_.clear();
+    nbr_.clear();
     ++version_;
+  }
+
+  /**
+   * Reserve room for @p n cells in every container, the neighbour table
+   * included (P10).
+   *
+   * Only grows; a smaller @p n is ignored.  Worth calling before a bulk insert
+   * (the first cloud), where the rehashing of cell_to_id_ is otherwise the
+   * dominant cost of ingestion.
+   */
+  void reserve(size_t n) {
+    if (n <= size()) {
+      return;
+    }
+    id_to_costs_.reserve(n);
+    id_to_cell_.reserve(n);
+    nbr_.reserve(kNbrStride * n);
+    cell_to_id_.reserve(n);
+  }
+
+  /**
+   * CellId of the i-th 8-neighbour of cell @p id, or INVALID_CELL_ID when that
+   * neighbour does not exist (P2).
+   *
+   * Flat table, no hash lookup: this is the Dijkstra inner loop.  For the
+   * 4-neighbourhood pass 2 * i, see kNbrStride.
+   */
+  CellId neighborId(CellId id, int i) const {
+    assert(id < size());
+    assert(i >= 0 && i < static_cast<int>(kNbrStride));
+    return nbr_[kNbrStride * id + static_cast<size_t>(i)];
   }
 
   /**
@@ -279,6 +434,7 @@ public:
     for (CellId v = 0; v < kept; ++v) {
       cell_to_id_[id_to_cell_[v]] = v;
     }
+    remapNeighbors(ev);
     ev.version = ++version_;
     return ev;
   }
@@ -303,6 +459,60 @@ public:
   }
 
 protected:
+  /**
+   * Append @p c, already inserted into cell_to_id_ with id @p id, to the cell
+   * and cost vectors and wire it into the neighbour table.
+   *
+   * The table is exact after this call: the 8 neighbours of @p c that already
+   * exist are written into its own row, and @p id is written into the
+   * antipodal slot of each of their rows.  A neighbour created later patches
+   * the link from its own side, so no rebuild is ever needed.
+   */
+  void appendCell(const Cell &c, CellId id) {
+    id_to_cell_.push_back(c);
+    id_to_costs_.push_back(default_costs_);
+    nbr_.resize(nbr_.size() + kNbrStride, INVALID_CELL_ID);
+    for (int i = 0; i < static_cast<int>(kNbrStride); ++i) {
+      const CellId n = findCell(neighbor8(c, i));
+      if (n != INVALID_CELL_ID) {
+        nbr_[kNbrStride * id + static_cast<size_t>(i)] = n;
+        // neighbor8 is antipodal: c is the ((i + 4) & 7)-th neighbour of n.
+        nbr_[kNbrStride * n + static_cast<size_t>((i + 4) & 7)] = id;
+      }
+    }
+    ++version_;
+  }
+
+  /**
+   * Renumber the neighbour table in place through the mapping of @p ev, which
+   * must describe a compaction that actually removed something.
+   *
+   * O(N), hash-free and allocation-free: old_to_new already yields
+   * INVALID_CELL_ID for a neighbour that was evicted, so the boundary of the
+   * retained region needs no special case, and new id <= old id makes the pass
+   * safe in place — the same argument eraseCells() uses for the cells
+   * themselves.  Keeping the capacity also matters: a grid that is compacted
+   * again and again while it regrows would otherwise reallocate a multi-megabyte
+   * block per eviction.  This lives inside eraseCells() so that no caller can
+   * forget it (P2 / the Eviction contract).
+   */
+  void remapNeighbors(const Eviction &ev) {
+    for (CellId v = 0; v < static_cast<CellId>(ev.before); ++v) {
+      const CellId w = ev.old_to_new[v];
+      if (w == INVALID_CELL_ID) {
+        continue;
+      }
+      for (size_t i = 0; i < kNbrStride; ++i) {
+        // w <= v, so the destination row is at or below the source row and the
+        // value is read before it can be overwritten.
+        const CellId n = nbr_[kNbrStride * v + i];
+        nbr_[kNbrStride * w + i] =
+            (n == INVALID_CELL_ID) ? INVALID_CELL_ID : ev.old_to_new[n];
+      }
+    }
+    nbr_.resize(kNbrStride * ev.after);
+  }
+
   float cell_size_;
   float forget_factor_;
   Costs default_costs_;
@@ -315,6 +525,15 @@ protected:
   std::vector<Cell> id_to_cell_;
   // Cell to CellId
   std::unordered_map<Cell, CellId, CellHasher> cell_to_id_;
+  /**
+   * Flat neighbour table (P2): nbr_[kNbrStride * id + i] is the CellId of
+   * neighbor8(cell(id), i), or INVALID_CELL_ID when that cell does not exist.
+   *
+   * Maintained incrementally by appendCell(), dropped by clear() and remapped
+   * by eraseCells() — the three (and only three) writers of id_to_cell_.
+   * 32 B per cell, i.e. 6.9 MB at 216 k cells.
+   */
+  std::vector<CellId> nbr_;
 };
 
 inline CellId Grid::findCell(const Cell &c) const {
@@ -381,6 +600,27 @@ inline int32_t cellRadius(const Grid &grid, float range) {
     return 65536;
   }
   return static_cast<int32_t>(cells);
+}
+
+/**
+ * True if every bounded layer of @p costs is within @p max_costs.
+ *
+ * The first non-finite entry of @p max_costs stops the check, so an all-NaN
+ * max bounds nothing.  Free function (P2) so that the planner can test the
+ * robot cell without constructing a Graph: a Graph caches the per-vertex
+ * result and would be stale once the ad-hoc layer is rewritten.
+ */
+inline bool costsInBounds(const Costs &costs, const Costs &max_costs) {
+  for (size_t i = 0; i < Costs::kSize; ++i) {
+    // Stop on first invalid max cost.
+    if (!std::isfinite(max_costs[i])) {
+      break;
+    }
+    if (!(costs[i] <= max_costs[i])) {
+      return false;
+    }
+  }
+  return true;
 }
 
 /// True if @p layer is a valid index into Costs.

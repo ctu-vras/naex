@@ -5,6 +5,7 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <cmath>
 #include <cstdlib>
 #include <limits>
@@ -918,4 +919,468 @@ TEST(Grid, VersionBumpsOnStructuralChangesOnly) {
   const uint64_t v2 = grid.version();
   grid.clear();
   EXPECT_GT(grid.version(), v2);
+}
+
+// --- P2: the flat neighbour table ------------------------------------------
+// The table replaces the per-edge hash lookups of the Dijkstra inner loop, so
+// a stale or mis-wired entry produces a plausible but wrong path.  The tests
+// below check it against the hash lookup it replaced, on every path that can
+// change a CellId (createCell, clear, eraseCells), and check the search itself
+// against a verbatim copy of the pre-P2 hash-based graph.
+
+namespace {
+
+/// Brute-force recomputation of one neighbour row: exactly the lookup
+/// Graph::target() used to do per examined edge.
+naex::grid::CellId referenceNeighbor(const Grid &grid, naex::grid::CellId v,
+                                     int i) {
+  const Cell n = naex::grid::neighbor8(grid.cell(v), i);
+  return grid.hasCell(n) ? grid.cellId(n) : naex::grid::INVALID_CELL_ID;
+}
+
+/// Every entry of the table equals the hash lookup, and every present entry is
+/// symmetric: if b is neighbour i of a then a is neighbour (i + 4) % 8 of b.
+void expectNeighborTableConsistent(const Grid &grid) {
+  for (naex::grid::CellId v = 0; v < grid.size(); ++v) {
+    for (int i = 0; i < 8; ++i) {
+      const naex::grid::CellId n = grid.neighborId(v, i);
+      EXPECT_EQ(n, referenceNeighbor(grid, v, i))
+          << "cell " << v << " direction " << i;
+      if (n == naex::grid::INVALID_CELL_ID) {
+        continue;
+      }
+      ASSERT_LT(n, grid.size()) << "cell " << v << " direction " << i;
+      EXPECT_EQ(grid.neighborId(n, (i + 4) % 8), v)
+          << "back link of cell " << v << " direction " << i;
+    }
+  }
+}
+
+/// A grid of `count` cells drawn from a `side` x `side` area in a shuffled,
+/// seeded order, so that neighbours are created before *and* after each other.
+Grid makeShuffledGrid(int16_t side, size_t count, unsigned seed) {
+  std::vector<Cell> cells;
+  for (int16_t x = 0; x < side; ++x) {
+    for (int16_t y = 0; y < side; ++y) {
+      cells.push_back(Cell(x, y));
+    }
+  }
+  std::mt19937 rng(seed);
+  std::shuffle(cells.begin(), cells.end(), rng);
+  cells.resize(std::min(count, cells.size()));
+  Grid grid(1.f, 1.f, Costs(0.f, 0.f, 0.f, 0.f));
+  for (const Cell &c : cells) {
+    grid.cellId(c);
+  }
+  return grid;
+}
+
+}  // namespace
+
+TEST(Grid, NeighborTableAntipodal) {
+  // The property the incremental back-link patch relies on.
+  for (int i = 0; i < 8; ++i) {
+    const Cell c(3, -5);
+    const Cell back = naex::grid::neighbor8(naex::grid::neighbor8(c, i),
+                                            (i + 4) % 8);
+    EXPECT_EQ(back.x, c.x) << "index " << i;
+    EXPECT_EQ(back.y, c.y) << "index " << i;
+  }
+}
+
+TEST(Grid, NeighborTableMatchesReferenceLookup) {
+  // 200 of 400 cells in a shuffled order: every cell has holes around it and
+  // both creation orders (neighbour first, neighbour last) occur.
+  const Grid grid = makeShuffledGrid(20, 200, 12345u);
+  ASSERT_EQ(grid.size(), 200u);
+  expectNeighborTableConsistent(grid);
+  // Some entries must actually be missing, or the test proves nothing.
+  size_t missing = 0;
+  for (naex::grid::CellId v = 0; v < grid.size(); ++v) {
+    for (int i = 0; i < 8; ++i) {
+      missing += grid.neighborId(v, i) == naex::grid::INVALID_CELL_ID;
+    }
+  }
+  EXPECT_GT(missing, 0u);
+}
+
+TEST(Grid, NeighborTableGrowsWithEveryCreateOrder) {
+  // Incremental maintenance after every single insertion, for the two extreme
+  // orders: strictly increasing (neighbours always exist already) and strictly
+  // decreasing (every link has to be patched from the other side).
+  for (int reverse = 0; reverse < 2; ++reverse) {
+    Grid grid(1.f, 1.f, Costs(0.f, 0.f, 0.f, 0.f));
+    for (int16_t k = 0; k < 6; ++k) {
+      for (int16_t l = 0; l < 6; ++l) {
+        const int16_t x = reverse ? static_cast<int16_t>(5 - k) : k;
+        const int16_t y = reverse ? static_cast<int16_t>(5 - l) : l;
+        grid.cellId(Cell(x, y));
+        expectNeighborTableConsistent(grid);
+      }
+    }
+    EXPECT_EQ(grid.size(), 36u);
+  }
+}
+
+TEST(Grid, NeighborTableAfterClear) {
+  Grid grid = makeShuffledGrid(10, 60, 7u);
+  expectNeighborTableConsistent(grid);
+  grid.clear();
+  EXPECT_EQ(grid.size(), 0u);
+  // Refilling with a different set must not resurrect a single old link.
+  for (int16_t x = 0; x < 4; ++x) {
+    for (int16_t y = 0; y < 4; ++y) {
+      grid.cellId(Cell(static_cast<int16_t>(x + 50), y));
+    }
+  }
+  EXPECT_EQ(grid.size(), 16u);
+  expectNeighborTableConsistent(grid);
+}
+
+TEST(Grid, NeighborTableAfterEvictionOnRandomGrids) {
+  // eraseCells() renumbers the survivors, so the table has to be remapped
+  // through Eviction::old_to_new.  Compare against the brute-force lookup on
+  // the compacted grid, for a range of seeds and eviction squares.
+  for (unsigned seed = 0; seed < 8; ++seed) {
+    Grid grid = makeShuffledGrid(20, 250, seed);
+    expectNeighborTableConsistent(grid);
+    std::mt19937 rng(seed + 1000u);
+    const int16_t cx = static_cast<int16_t>(rng() % 20);
+    const int16_t cy = static_cast<int16_t>(rng() % 20);
+    const int32_t r = static_cast<int32_t>(rng() % 8);
+    const naex::grid::Eviction ev = grid.evictOutside(Cell(cx, cy), r);
+    ASSERT_EQ(grid.size(), ev.after);
+    expectNeighborTableConsistent(grid);
+    // An eviction that removed nothing must leave the table untouched, and
+    // one that removed everything must leave no table at all.
+    if (!ev.changed()) {
+      EXPECT_TRUE(ev.old_to_new.empty());
+    }
+    // The grid must still be usable: create a cell next to a survivor.
+    if (grid.size() > 0) {
+      const Cell c = naex::grid::neighbor8(grid.cell(0), 0);
+      grid.cellId(c);
+      expectNeighborTableConsistent(grid);
+    }
+  }
+}
+
+TEST(Grid, NeighborTableAfterEvictionKeepsEveryLink) {
+  // The 20x20 dense fixture cropped to a 7x7 square: every interior link of
+  // the square must survive the renumbering, and the boundary must lose
+  // exactly the links that pointed outside.
+  Grid grid = makeDenseGrid(20);
+  grid.evictOutside(Cell(10, 10), 3);
+  ASSERT_EQ(grid.size(), 49u);
+  expectNeighborTableConsistent(grid);
+  size_t links = 0;
+  for (naex::grid::CellId v = 0; v < grid.size(); ++v) {
+    for (int i = 0; i < 8; ++i) {
+      links += grid.neighborId(v, i) != naex::grid::INVALID_CELL_ID;
+    }
+  }
+  // 7x7 square: 2*(2*7*6) straight + 2*(2*6*6) diagonal directed links.
+  EXPECT_EQ(links, static_cast<size_t>(2 * 2 * 7 * 6 + 2 * 2 * 6 * 6));
+}
+
+// The pre-P2 graph, kept verbatim so the searches can be compared edge for
+// edge: target() by two hash lookups with the self-edge fallback, cost() by
+// recomputing Costs::total() and the bounds check on both endpoints.
+namespace ref {
+
+using naex::grid::Cost;
+using naex::grid::Costs;
+using naex::grid::EdgeId;
+using naex::grid::EdgeIter;
+using naex::grid::Grid;
+using naex::grid::VertexId;
+using naex::grid::VertexIter;
+
+class RefGraph {
+public:
+  static constexpr Cost INF = std::numeric_limits<Cost>::infinity();
+
+  RefGraph(const Grid &grid, uint8_t neighborhood, const Costs &max_costs)
+      : grid_(grid), neighborhood_(neighborhood), max_costs_(max_costs) {}
+  VertexId num_vertices() const { return grid_.size(); }
+  std::pair<VertexIter, VertexIter> vertices() const {
+    return {VertexIter(0), VertexIter(num_vertices())};
+  }
+  std::pair<EdgeIter, EdgeIter> out_edges(const VertexId &u) const {
+    return {EdgeIter(neighborhood_ * u), EdgeIter(neighborhood_ * (u + 1))};
+  }
+  VertexId source(const EdgeId &e) const { return e / neighborhood_; }
+  VertexId target_index(const EdgeId &e) const { return e % neighborhood_; }
+  VertexId target(const EdgeId &e) const {
+    auto s = source(e);
+    auto cell = grid_.cell(s);
+    auto i = target_index(e);
+    if (neighborhood_ == 8) {
+      cell = naex::grid::neighbor8(cell, i);
+    } else if (neighborhood_ == 4) {
+      cell = naex::grid::neighbor4(cell, i);
+    }
+    if (grid_.hasCell(cell)) {
+      return grid_.cellId(cell);
+    }
+    return s;
+  }
+  bool costsInBounds(const Costs &costs) const {
+    for (size_t i = 0; i < Costs::kSize; ++i) {
+      if (!std::isfinite(max_costs_[i])) {
+        break;
+      }
+      if (!(costs[i] <= max_costs_[i])) {
+        return false;
+      }
+    }
+    return true;
+  }
+  Cost cost(const EdgeId &e) const {
+    const auto &c0 = grid_.costs(source(e));
+    if (!costsInBounds(c0)) {
+      return INF;
+    }
+    const auto &c1 = grid_.costs(target(e));
+    if (!costsInBounds(c1)) {
+      return INF;
+    }
+    auto cost = 1 + (c0.total() + c1.total()) / 2;
+    cost *= grid_.cellSize();
+    if (neighborhood_ == 8) {
+      cost *= naex::grid::distance8(target_index(e));
+    }
+    return cost;
+  }
+
+private:
+  const Grid &grid_;
+  const uint8_t neighborhood_;
+  const Costs max_costs_;
+};
+
+class RefEdgeCosts {
+public:
+  RefEdgeCosts(const RefGraph &graph) : graph_(graph) {}
+  Cost operator[](const EdgeId &e) const { return graph_.cost(e); }
+
+private:
+  const RefGraph &graph_;
+};
+
+inline std::pair<VertexIter, VertexIter> vertices(const RefGraph &g) {
+  return g.vertices();
+}
+inline VertexId source(EdgeId e, const RefGraph &g) { return g.source(e); }
+inline VertexId target(EdgeId e, const RefGraph &g) { return g.target(e); }
+inline std::pair<EdgeIter, EdgeIter> out_edges(VertexId u, const RefGraph &g) {
+  return g.out_edges(u);
+}
+inline Cost get(const RefEdgeCosts &map, const EdgeId &key) { return map[key]; }
+
+}  // namespace ref
+
+namespace boost {
+template <> struct graph_traits<ref::RefGraph> {
+  typedef naex::grid::VertexId vertex_descriptor;
+  typedef naex::grid::VertexId vertices_size_type;
+  typedef naex::grid::EdgeId edge_descriptor;
+  typedef naex::grid::EdgeId edges_size_type;
+  typedef directed_tag directed_category;
+  typedef disallow_parallel_edge_tag edge_parallel_category;
+  typedef bidirectional_traversal_tag traversal_category;
+  typedef naex::grid::VertexIter vertex_iterator;
+  typedef naex::grid::EdgeIter out_edge_iterator;
+};
+template <> class property_traits<ref::RefEdgeCosts> {
+public:
+  typedef naex::grid::EdgeId key_type;
+  typedef naex::grid::Cost value_type;
+  typedef naex::grid::Cost reference;
+  typedef readable_property_map_tag category;
+};
+}  // namespace boost
+
+namespace ref {
+
+/// The pre-P2 ShortestPaths: fresh buffers, hash-based graph.
+struct RefShortestPaths {
+  RefShortestPaths(const Grid &grid, VertexId start, uint8_t neighborhood,
+                   const Costs &max_costs)
+      : predecessor(grid.size(), std::numeric_limits<VertexId>::max()),
+        path_costs(grid.size(), std::numeric_limits<Cost>::infinity()) {
+    const RefGraph graph(grid, neighborhood, max_costs);
+    const RefEdgeCosts edge_costs(graph);
+    boost::typed_identity_property_map<VertexId> index_map;
+    boost::dijkstra_shortest_paths_no_color_map(
+        graph, start, predecessor.data(), path_costs.data(), edge_costs,
+        index_map, std::less<Cost>(), boost::closed_plus<Cost>(),
+        std::numeric_limits<Cost>::infinity(), Cost(0.),
+        boost::dijkstra_visitor<boost::null_visitor>());
+  }
+  std::vector<VertexId> predecessor;
+  std::vector<Cost> path_costs;
+};
+
+}  // namespace ref
+
+TEST(ShortestPaths, MatchesThePreP2HashGraphOnRandomGrids) {
+  // 20 random sparse grids with random costs, searched from a random start
+  // with both neighbourhoods.  Costs are multiples of 0.25 so that ties are
+  // exact and both searches break them the same way.
+  for (unsigned seed = 0; seed < 20; ++seed) {
+    std::mt19937 rng(seed);
+    Grid grid(0.4f, 1.f, Costs(0.f, 0.f, 0.f, 0.f));
+    for (int16_t x = 0; x < 16; ++x) {
+      for (int16_t y = 0; y < 16; ++y) {
+        if (rng() % 4 == 0) {
+          continue;  // hole: no cell at all
+        }
+        const naex::grid::CellId v = grid.cellId(Cell(x, y));
+        grid.costs(v)[0] = 0.25f * static_cast<float>(rng() % 9);
+        grid.costs(v)[1] = (rng() % 8 == 0) ? kNaN : 0.f;
+      }
+    }
+    ASSERT_GT(grid.size(), 0u);
+    const VertexId start = static_cast<VertexId>(rng() % grid.size());
+    // Half the seeds bound layer 0, so some cells are untraversable.
+    const Costs max_costs = (seed % 2) ? Costs(1.f) : Costs();
+    for (const uint8_t nb : {uint8_t(4), uint8_t(8)}) {
+      const ref::RefShortestPaths expected(grid, start, nb, max_costs);
+      const ShortestPaths actual(grid, start, nb, max_costs);
+      ASSERT_EQ(actual.pathCosts().size(), expected.path_costs.size());
+      for (VertexId v = 0; v < grid.size(); ++v) {
+        const Cost a = actual.pathCost(v);
+        const Cost b = expected.path_costs[v];
+        ASSERT_EQ(std::isfinite(a), std::isfinite(b))
+            << "seed " << seed << " nb " << int(nb) << " vertex " << v;
+        if (std::isfinite(b)) {
+          EXPECT_FLOAT_EQ(a, b)
+              << "seed " << seed << " nb " << int(nb) << " vertex " << v;
+        }
+        EXPECT_EQ(actual.predecessor(v), expected.predecessor[v])
+            << "seed " << seed << " nb " << int(nb) << " vertex " << v;
+      }
+    }
+  }
+}
+
+TEST(ShortestPaths, MatchesThePreP2HashGraphAfterEviction) {
+  // Same comparison on a compacted grid, i.e. against a remapped table.
+  Grid grid = makeShuffledGrid(20, 300, 99u);
+  std::mt19937 rng(5u);
+  for (naex::grid::CellId v = 0; v < grid.size(); ++v) {
+    grid.costs(v)[0] = 0.25f * static_cast<float>(rng() % 5);
+  }
+  grid.evictOutside(Cell(9, 9), 5);
+  ASSERT_GT(grid.size(), 0u);
+  expectNeighborTableConsistent(grid);
+  const ref::RefShortestPaths expected(grid, 0, 8, Costs(0.75f));
+  const ShortestPaths actual(grid, 0, 8, Costs(0.75f));
+  for (VertexId v = 0; v < grid.size(); ++v) {
+    ASSERT_EQ(std::isfinite(actual.pathCost(v)),
+              std::isfinite(expected.path_costs[v]))
+        << "vertex " << v;
+    if (std::isfinite(expected.path_costs[v])) {
+      EXPECT_FLOAT_EQ(actual.pathCost(v), expected.path_costs[v])
+          << "vertex " << v;
+    }
+    EXPECT_EQ(actual.predecessor(v), expected.predecessor[v]) << "vertex " << v;
+  }
+}
+
+TEST(Graph, TargetFallsBackToSourceAtTheBorder) {
+  // A single isolated cell has no neighbour at all: target() still reports the
+  // source, and the edge is inert because its cost is INF (pre-P2 it was a
+  // finite self-edge, which Dijkstra could not relax either).
+  Grid grid(1.f, 1.f, Costs(0.f, 0.f, 0.f, 0.f));
+  const VertexId v = grid.cellId(Cell(4, 4));
+  const Graph graph(grid, Costs());
+  for (naex::grid::EdgeId e = 0; e < 8; ++e) {
+    EXPECT_EQ(graph.target(e), v) << "edge " << e;
+    EXPECT_FALSE(std::isfinite(graph.cost(e))) << "edge " << e;
+  }
+  // A search from it terminates and reaches nothing else.
+  const ShortestPaths sp(grid, v, 8, Costs());
+  EXPECT_FLOAT_EQ(sp.pathCost(v), 0.f);
+  EXPECT_EQ(sp.predecessor(v), v);
+}
+
+TEST(Graph, CostUsesTheTableAndTheCachedTotals) {
+  // Two adjacent cells: the straight edge costs cell_size, the diagonal one
+  // cell_size * sqrt(2), and a cost on either endpoint enters as half.
+  Grid grid(0.4f, 1.f, Costs(0.f, 0.f, 0.f, 0.f));
+  const VertexId a = grid.cellId(Cell(0, 0));
+  const VertexId b = grid.cellId(Cell(1, 0));
+  const VertexId c = grid.cellId(Cell(1, 1));
+  grid.costs(b)[0] = 2.f;
+  const Graph graph(grid, Costs());
+  // Edge a -> b is direction 0 (+x), a -> c is direction 1 (+x+y).
+  EXPECT_FLOAT_EQ(graph.cost(8 * a + 0), (1.f + 1.f) * 0.4f);
+  EXPECT_FLOAT_EQ(graph.cost(8 * a + 1), 1.f * 0.4f * std::sqrt(2.f));
+  EXPECT_EQ(graph.target(8 * a + 0), b);
+  EXPECT_EQ(graph.target(8 * a + 1), c);
+  // Direction 4 (-x) does not exist: inert edge.
+  EXPECT_EQ(graph.target(8 * a + 4), a);
+  EXPECT_FALSE(std::isfinite(graph.cost(8 * a + 4)));
+}
+
+TEST(Planning, NeighborhoodFourMatchesEight) {
+  // The 20x20 gap fixture, 4-connected: the shared 8-slot table is read at the
+  // even indices only, so the cost must be the integral Manhattan optimum.
+  Grid grid = makeDenseGrid(20);
+  for (int16_t y = 0; y <= 17; ++y) {
+    grid.cellCosts(Cell(10, y))[0] = 5.f;
+  }
+  const Costs max_costs(1.f);
+  const VertexId start = grid.cellId(Cell(0, 0));
+  const VertexId goal = grid.cellId(Cell(19, 0));
+  const ShortestPaths sp(grid, start, 4, max_costs);
+  // Around the wall through the gap at (10, 18): 19 in x and 2 * 18 in y.
+  EXPECT_NEAR(sp.pathCost(goal), 19.f + 36.f, 1e-3f);
+  EXPECT_FALSE(std::isfinite(sp.pathCost(grid.cellId(Cell(10, 5)))));
+  // The 8-connected search on the same grid is the one the exact-cost guard
+  // pins; it must stay strictly cheaper.
+  const ShortestPaths sp8(grid, start, 8, max_costs);
+  EXPECT_LT(sp8.pathCost(goal), sp.pathCost(goal));
+}
+
+TEST(Grid, ReserveDoesNotChangeContent) {
+  // P10: reserve() only grows capacity; the table and the ids stay put.
+  Grid grid = makeShuffledGrid(10, 60, 3u);
+  const size_t n = grid.size();
+  const std::vector<naex::grid::CellId> before = [&] {
+    std::vector<naex::grid::CellId> v;
+    for (naex::grid::CellId i = 0; i < n; ++i) {
+      for (int k = 0; k < 8; ++k) {
+        v.push_back(grid.neighborId(i, k));
+      }
+    }
+    return v;
+  }();
+  grid.reserve(100000);
+  EXPECT_EQ(grid.size(), n);
+  grid.reserve(1);  // smaller: ignored
+  EXPECT_EQ(grid.size(), n);
+  for (naex::grid::CellId i = 0; i < n; ++i) {
+    for (int k = 0; k < 8; ++k) {
+      EXPECT_EQ(grid.neighborId(i, k), before[8 * i + k]);
+    }
+  }
+  expectNeighborTableConsistent(grid);
+}
+
+TEST(Grid, CellHashIsPerfect) {
+  // P10: the packed hash must be injective over the int16 pair domain.
+  const naex::grid::CellHasher hash;
+  std::set<std::size_t> seen;
+  const int16_t values[] = {-32768, -32767, -1, 0, 1, 32766, 32767};
+  for (const int16_t x : values) {
+    for (const int16_t y : values) {
+      EXPECT_TRUE(seen.insert(hash(Cell(x, y))).second)
+          << "collision at (" << x << ", " << y << ")";
+    }
+  }
+  const size_t n = sizeof(values) / sizeof(values[0]);
+  EXPECT_EQ(seen.size(), n * n);
 }

@@ -435,9 +435,11 @@ public:
       }
     }
 
-    Graph graph(grid_, neighborhood_, max_costs_);
+    // No Graph here (P2): a Graph caches the per-vertex total cost and would be
+    // stale by the time the ad-hoc layer below is rewritten, so the bounds
+    // check is the free function.
     VertexId v0 = grid_.cellId(grid_.pointToCell({p0.x(), p0.y()}));
-    if (!graph.costsInBounds(grid_.costs(v0))) {
+    if (!costsInBounds(grid_.costs(v0), max_costs_)) {
       RCLCPP_WARN(nh_->get_logger(), "Robot position %s is not traversable.",
                   format(toVec3(grid_.point(v0))).c_str());
       // Fall back to the nearest traversable cell.  This O(N) scan only runs
@@ -447,7 +449,7 @@ public:
       VertexId v_best = INVALID_VERTEX_ID;
       float best_dist = std::numeric_limits<float>::infinity();
       for (VertexId v = 0; v < n; ++v) {
-        if (!graph.costsInBounds(grid_.costs(v))) {
+        if (!costsInBounds(grid_.costs(v), max_costs_)) {
           continue;
         }
         const Value dist = (toVec3(grid_.point(v)) - p0).norm();
@@ -488,7 +490,10 @@ public:
     }
 
     Timer t_dijkstra;
-    ShortestPaths sp(grid_, v0, neighborhood_, max_costs_);
+    // Reused across requests (P2): the predecessor and path-cost buffers keep
+    // their capacity, so a steady-state cycle allocates nothing here.
+    ShortestPaths &sp = shortest_paths_;
+    sp.compute(grid_, v0, static_cast<uint8_t>(neighborhood_), max_costs_);
     plan_timings_.dijkstra = t_dijkstra.seconds_elapsed();
     // Unchanged on purpose: t_part still runs from the top of plan(), so this
     // line stays comparable with logs recorded before the instrumentation.
@@ -654,7 +659,7 @@ public:
    * ever writes adhoc_layer_: cells created since the last apply already carry
    * default_costs_[adhoc_layer_] (Grid::createCell), and a cloud cost field
    * mapped onto the ad-hoc layer is rejected by checkInputParameters().  Every
-   * operation that invalidates CellIds (clearMap(), later P6 eviction) must
+   * operation that invalidates CellIds (clearMap(), the P6 eviction) must
    * drop the dirty list.
    */
   void clearAdHocLayer() {
@@ -759,6 +764,12 @@ public:
 
     Timer t_loop;
     const size_t num_pts = num_points(*input);
+    if (grid_.empty()) {
+      // First cloud: almost every point becomes a cell, and it is the only
+      // time the hash map rehashes from nothing to its final size (P10).
+      // Later clouds add few cells, so no per-cloud reservation is made.
+      grid_.reserve(num_pts);
+    }
     size_t skipped = 0;
     for (size_t pt = 0; pt < num_pts; ++pt, ++x_it) {
       // Non-finite input must be rejected before the cast in pointToCell()
@@ -827,7 +838,8 @@ public:
    * Eviction contract in grid.h.  Today that is only the ad-hoc dirty list,
    * which is restored *before* the compaction (its CellIds are still valid at
    * that point) so that no cell keeps a stale sidelobe cost forever.  P2's
-   * neighbour table must be rebuilt or remapped from ev.old_to_new right here.
+   * neighbour table is remapped by Grid::eraseCells() itself, so no caller can
+   * forget it.
    *
    * @return true if the compaction ran (whether or not it removed anything).
    */
@@ -1044,6 +1056,8 @@ protected:
   int neighborhood_{8};
   Costs max_costs_;
   Costs default_costs_;
+  /// Reused search buffers (P2); see plan().  Holds no reference to the grid.
+  ShortestPaths shortest_paths_;
 
   // Planning
   // Re-planning frequency, repeating the last request if positive.
