@@ -9,8 +9,10 @@
 #include <chrono>
 #include <cmath>
 #include <geometry_msgs/msg/transform_stamped.hpp>
+#include <iomanip>
 #include <limits>
 #include <memory>
+#include <mutex>
 #include <sensor_msgs/point_cloud2_iterator.hpp>
 #include <sstream>
 #include <stdexcept>
@@ -192,15 +194,19 @@ Planner::Planner(rclcpp::Node::SharedPtr nh) : nh_(nh) {
   param_subscriber_ = std::make_shared<rclcpp::ParameterEventHandler>(nh_);
   cb_handle_ = param_subscriber_->add_parameter_callback(
       "max_costs_relative", [this](const rclcpp::Parameter &p) {
+        std::vector<float> relative;
         try {
           const auto values = p.as_double_array();
-          max_costs_relative_ =
-              std::vector<float>(values.begin(), values.end());
+          relative.assign(values.begin(), values.end());
         } catch (const rclcpp::ParameterTypeException &ex) {
           RCLCPP_ERROR(nh_->get_logger(),
                        "Ignoring max_costs_relative update: %s", ex.what());
           return;
         }
+        // Top-level entry point (see mtx_): the action thread reads the
+        // bounds during a plan.
+        std::lock_guard<std::mutex> lock(mtx_);
+        max_costs_relative_ = std::move(relative);
         update_max_costs_absolute(true);
       });
 
@@ -327,6 +333,17 @@ Planner::Planner(rclcpp::Node::SharedPtr nh) : nh_(nh) {
               nav2_msgs::srv::ClearEntireCostmap::Response::SharedPtr res) {
             this->clear_map_costmap(req, res);
           });
+
+  // nav2_util::SimpleActionServer spins the execute callback on its own
+  // thread (spin_thread = true), so compute_plan() runs concurrently with
+  // the node's single-threaded executor (get_plan, the clouds, the timer);
+  // mtx_ is what keeps that safe (see mtx_).
+  action_server_ =
+      std::make_unique<nav2_util::SimpleActionServer<ComputePathAction>>(
+          nh_, "compute_path_to_pose",
+          std::bind(&Planner::compute_plan, this), nullptr,
+          std::chrono::milliseconds(500), true);
+  action_server_->activate();
 
   // Configuration trap, found by profiling the P2 build (2026-09-12):
   // map_range evicts the cells that a wider ingestion crop re-creates from
@@ -568,8 +585,7 @@ Planner::get_nearest_traversable_vertex(const Vec3 &p0) {
   return result;
 }
 
-void Planner::return_straight_line_plan(
-    nav_msgs::srv::GetPlan::Response::SharedPtr res,
+nav_msgs::msg::Path Planner::return_straight_line_plan(
     const geometry_msgs::msg::PoseStamped &start,
     const geometry_msgs::msg::PoseStamped &goal) {
   nav_msgs::msg::Path local_plan;
@@ -577,8 +593,8 @@ void Planner::return_straight_line_plan(
   local_plan.header.stamp = nh_->get_clock()->now();
   local_plan.poses.push_back(start);
   local_plan.poses.push_back(goal);
-  res->plan = std::move(local_plan);
   RCLCPP_INFO(nh_->get_logger(), "Planning straight line.");
+  return local_plan;
 }
 
 VertexId Planner::select_start_vertex(const Vec3 &p0, bool &straight_line) {
@@ -715,15 +731,30 @@ VertexId Planner::select_astar_goal_vertex(const ShortestPaths &sp, VertexId v0,
   return v1;
 }
 
-bool Planner::plan(nav_msgs::srv::GetPlan::Request::SharedPtr req,
-                   nav_msgs::srv::GetPlan::Response::SharedPtr res) {
-  Timer t;
-  Timer t_part;
+bool Planner::plan_from_request(
+    nav_msgs::srv::GetPlan::Request::SharedPtr req,
+    nav_msgs::srv::GetPlan::Response::SharedPtr res) {
   RCLCPP_INFO(nh_->get_logger(),
               "Planning request from %s to %s with tolerance %.1f m.",
               format(req->start.pose.position).c_str(),
               format(req->goal.pose.position).c_str(), req->tolerance);
   last_request_ = req;
+  nav_msgs::msg::Path path;
+  const bool ok = plan(req->start, req->goal, path);
+  if (ok) {
+    res->plan = std::move(path);
+  }
+  return ok;
+}
+
+bool Planner::plan(const geometry_msgs::msg::PoseStamped &start_in,
+                   const geometry_msgs::msg::PoseStamped &goal_in,
+                   nav_msgs::msg::Path &path) {
+  Timer t;
+  Timer t_part;
+  RCLCPP_INFO(nh_->get_logger(), "Planning request from %s to %s.",
+              format(start_in.pose.position).c_str(),
+              format(goal_in.pose.position).c_str());
 
   if (grid_.empty()) {
     RCLCPP_WARN(nh_->get_logger(), "Cannot plan in empty grid.");
@@ -731,15 +762,15 @@ bool Planner::plan(nav_msgs::srv::GetPlan::Request::SharedPtr req,
   }
 
   // Transform start and goal into map_frame_.
-  geometry_msgs::msg::PoseStamped start = req->start;
-  geometry_msgs::msg::PoseStamped goal = req->goal;
+  geometry_msgs::msg::PoseStamped start = start_in;
+  geometry_msgs::msg::PoseStamped goal = goal_in;
   if (start.header.frame_id != goal.header.frame_id) {
     RCLCPP_WARN(nh_->get_logger(),
                 "Start and goal frame_id do not match ('%s' vs '%s'). "
                 "Taking start frame as the one for the response.",
                 start.header.frame_id.c_str(), goal.header.frame_id.c_str());
   }
-  const std::string request_frame = req->start.header.frame_id;
+  const std::string request_frame = start_in.header.frame_id;
   // Stamp with zero time (tf2::TimePointZero, "latest available") rather than
   // with nh_->now(): a now() stamp asks the buffer for a transform it cannot
   // have yet, so tf_->transform() blocks the single executor thread until TF
@@ -816,7 +847,7 @@ bool Planner::plan(nav_msgs::srv::GetPlan::Request::SharedPtr req,
   bool straight_line = false;
   const VertexId v0 = select_start_vertex(p0, straight_line);
   if (straight_line) {
-    return_straight_line_plan(res, start, goal);
+    path = return_straight_line_plan(start, goal);
     return true;
   }
   if (v0 == INVALID_VERTEX_ID) {
@@ -941,11 +972,11 @@ bool Planner::plan(nav_msgs::srv::GetPlan::Request::SharedPtr req,
     // the goal checker down the path.
     local_plan.poses.push_back(goal);
   }
-  res->plan = std::move(local_plan);
+  path = std::move(local_plan);
 
   RCLCPP_INFO(nh_->get_logger(),
               "Path with %lu poses toward goal %s planned (%.3f s).",
-              res->plan.poses.size(), format(p1).c_str(), t.seconds_elapsed());
+              path.poses.size(), format(p1).c_str(), t.seconds_elapsed());
   return true;
 }
 
@@ -1038,13 +1069,16 @@ void Planner::log_plan_summary() const {
 
 bool Planner::plan_safe(nav_msgs::srv::GetPlan::Request::SharedPtr req,
                         nav_msgs::srv::GetPlan::Response::SharedPtr res) {
+  // Top-level entry point (see mtx_): held for the whole plan, including the
+  // tf2 exception handling below.
+  std::lock_guard<std::mutex> lock(mtx_);
   // Reset here rather than in plan() so that every exit path of plan(),
   // including the tf2 exception below, still produces a summary line.
   plan_timings_ = PlanTimings();
   Timer t_total;
   bool ok = false;
   try {
-    ok = plan(req, res);
+    ok = plan_from_request(req, res);
   } catch (const tf2::TransformException &ex) {
     RCLCPP_ERROR(nh_->get_logger(), "Transform failed: %s.", ex.what());
     ok = false;
@@ -1067,7 +1101,156 @@ void Planner::request_plan(nav_msgs::srv::GetPlan::Request::SharedPtr req,
   }
 }
 
+void Planner::compute_plan() {
+  const auto start_time = nh_->now();
+  // Top-level entry point (see mtx_): held for the whole action, including
+  // the TF lookups below and the plan() call.
+  std::lock_guard<std::mutex> lock(mtx_);
+
+  auto goal = action_server_->get_current_goal();
+  auto result = std::make_shared<ComputePathAction::Result>();
+  RCLCPP_INFO(nh_->get_logger(), "Computing path to goal.");
+
+  geometry_msgs::msg::PoseStamped start_pose;
+  geometry_msgs::msg::PoseStamped goal_pose;
+  try {
+    if (action_server_ == nullptr || !action_server_->is_server_active()) {
+      RCLCPP_WARN(nh_->get_logger(),
+                  "Action server unavailable or inactive. Stopping.");
+      return;
+    }
+    if (action_server_->is_cancel_requested()) {
+      RCLCPP_INFO(nh_->get_logger(),
+                  "Goal was canceled. Canceling planning action.");
+      action_server_->terminate_all();
+      return;
+    }
+    if (action_server_->is_preempt_requested()) {
+      goal = action_server_->accept_pending_goal();
+    }
+
+    // Current robot pose is the start; request_tf_timeout_ is the same
+    // budget the GetPlan path uses (P5), not upstream's hard-coded 0.1 s.
+    if (!nav2_util::getCurrentPose(start_pose, *tf_, map_frame_, robot_frame_,
+                                   request_tf_timeout_)) {
+      throw nav2_core::PlannerTFError("Unable to get start pose");
+    }
+
+    goal_pose = goal->goal;
+    if (goal_pose.header.frame_id.empty()) {
+      throw nav2_core::PlannerTFError(
+          "Goal pose has no frame. Please fill out header.frame_id.");
+    }
+    if (goal_pose.header.frame_id != map_frame_) {
+      // Same request_tf_timeout_ budget, not upstream's hard-coded 1.0 s.
+      if (!nav2_util::transformPoseInTargetFrame(
+              goal_pose, goal_pose, *tf_, map_frame_, request_tf_timeout_)) {
+        throw nav2_core::PlannerTFError("Unable to transform poses to global frame");
+      }
+    }
+
+    RCLCPP_INFO(nh_->get_logger(),
+                "Attempting to find a path from (%.2f, %.2f) to (%.2f, %.2f).",
+                start_pose.pose.position.x, start_pose.pose.position.y,
+                goal_pose.pose.position.x, goal_pose.pose.position.y);
+
+    // Does not touch last_request_: this is a one-off request, not the
+    // periodic re-planning source (that stays the GetPlan/timer path).
+    nav_msgs::msg::Path path;
+    plan(start_pose, goal_pose, path);
+    result->path = path;
+
+    if (result->path.poses.empty()) {
+      RCLCPP_WARN(nh_->get_logger(),
+                  "Planning algorithm %s failed to generate a valid path to "
+                  "(%.2f, %.2f)",
+                  goal->planner_id.c_str(), goal_pose.pose.position.x,
+                  goal_pose.pose.position.y);
+      throw nav2_core::NoValidPathCouldBeFound(goal->planner_id +
+                                               " generated an empty path");
+    }
+    RCLCPP_INFO(nh_->get_logger(), "Found valid path of size %zu to (%.2f, %.2f)",
+                result->path.poses.size(), goal_pose.pose.position.x,
+                goal_pose.pose.position.y);
+
+    // Our core plan() never publishes to path_pub_ itself (only the GetPlan
+    // service/timer path does, via request_plan()/planning_timer()), so this
+    // does not double-publish.
+    auto msg = std::make_unique<nav_msgs::msg::Path>(result->path);
+    path_pub_->publish(std::move(msg));
+
+    result->planning_time = nh_->now() - start_time;
+    action_server_->succeeded_current(result);
+  } catch (nav2_core::InvalidPlanner &ex) {
+    exception_warning(start_pose, goal->goal, goal->planner_id, ex,
+                      result->error_msg);
+    result->error_code = ComputePathAction::Result::INVALID_PLANNER;
+    action_server_->terminate_current(result);
+  } catch (nav2_core::StartOccupied &ex) {
+    exception_warning(start_pose, goal->goal, goal->planner_id, ex,
+                      result->error_msg);
+    result->error_code = ComputePathAction::Result::START_OCCUPIED;
+    action_server_->terminate_current(result);
+  } catch (nav2_core::GoalOccupied &ex) {
+    exception_warning(start_pose, goal->goal, goal->planner_id, ex,
+                      result->error_msg);
+    result->error_code = ComputePathAction::Result::GOAL_OCCUPIED;
+    action_server_->terminate_current(result);
+  } catch (nav2_core::NoValidPathCouldBeFound &ex) {
+    exception_warning(start_pose, goal->goal, goal->planner_id, ex,
+                      result->error_msg);
+    result->error_code = ComputePathAction::Result::NO_VALID_PATH;
+    action_server_->terminate_current(result);
+  } catch (nav2_core::PlannerTimedOut &ex) {
+    exception_warning(start_pose, goal->goal, goal->planner_id, ex,
+                      result->error_msg);
+    result->error_code = ComputePathAction::Result::TIMEOUT;
+    action_server_->terminate_current(result);
+  } catch (nav2_core::StartOutsideMapBounds &ex) {
+    exception_warning(start_pose, goal->goal, goal->planner_id, ex,
+                      result->error_msg);
+    result->error_code = ComputePathAction::Result::START_OUTSIDE_MAP;
+    action_server_->terminate_current(result);
+  } catch (nav2_core::GoalOutsideMapBounds &ex) {
+    exception_warning(start_pose, goal->goal, goal->planner_id, ex,
+                      result->error_msg);
+    result->error_code = ComputePathAction::Result::GOAL_OUTSIDE_MAP;
+    action_server_->terminate_current(result);
+  } catch (nav2_core::PlannerTFError &ex) {
+    exception_warning(start_pose, goal->goal, goal->planner_id, ex,
+                      result->error_msg);
+    result->error_code = ComputePathAction::Result::TF_ERROR;
+    action_server_->terminate_current(result);
+  } catch (nav2_core::PlannerCancelled &) {
+    result->error_msg = "Goal was canceled. Canceling planning action.";
+    RCLCPP_INFO(nh_->get_logger(), "%s", result->error_msg.c_str());
+    action_server_->terminate_all();
+  } catch (std::exception &ex) {
+    exception_warning(start_pose, goal->goal, goal->planner_id, ex,
+                      result->error_msg);
+    result->error_code = ComputePathAction::Result::UNKNOWN;
+    action_server_->terminate_current(result);
+  }
+}
+
+void Planner::exception_warning(const geometry_msgs::msg::PoseStamped &start,
+                                const geometry_msgs::msg::PoseStamped &goal,
+                                const std::string &planner_id,
+                                const std::exception &ex,
+                                std::string &error_msg) {
+  std::stringstream ss;
+  ss << std::fixed << std::setprecision(2) << planner_id
+     << " plugin failed to plan from (" << start.pose.position.x << ", "
+     << start.pose.position.y << ") to (" << goal.pose.position.x << ", "
+     << goal.pose.position.y << "): \"" << ex.what() << "\"";
+  error_msg = ss.str();
+  RCLCPP_WARN(nh_->get_logger(), "%s", error_msg.c_str());
+}
+
 size_t Planner::clear_map_impl() {
+  // Top-level entry point (see mtx_): both clear_map() and
+  // clear_map_costmap() funnel through here.
+  std::lock_guard<std::mutex> lock(mtx_);
   const size_t cells = grid_.size();
   grid_.clear();
   // Every CellId is invalidated, so the ad-hoc dirty list cannot be replayed.
@@ -1360,6 +1543,9 @@ bool Planner::maybe_evict_cells(const Point2f &robot) {
 void Planner::receive_cloud_safe(
     const std::shared_ptr<const sensor_msgs::msg::PointCloud2> &input,
     int cloud_index) {
+  // Top-level entry point (see mtx_): held for the whole ingestion,
+  // including eviction and the occupancy-grid publish inside receive_cloud().
+  std::lock_guard<std::mutex> lock(mtx_);
   try {
     receive_cloud(input, cloud_index);
   } catch (const tf2::TransformException &ex) {

@@ -18,7 +18,12 @@
 #include <geometry_msgs/msg/pose_stamped.hpp>
 #include <limits>
 #include <memory>
+#include <mutex>
+#include <nav2_core/planner_exceptions.hpp>
+#include <nav2_msgs/action/compute_path_to_pose.hpp>
 #include <nav2_msgs/srv/clear_entire_costmap.hpp>
+#include <nav2_util/robot_utils.hpp>
+#include <nav2_util/simple_action_server.hpp>
 #include <nav_msgs/msg/occupancy_grid.hpp>
 #include <nav_msgs/msg/path.hpp>
 #include <nav_msgs/srv/get_plan.hpp>
@@ -150,9 +155,9 @@ public:
   std::pair<float, VertexId> get_nearest_traversable_vertex(const Vec3 &p0);
 
   /// Fall-back plan when the start is nowhere near anything traversable.
-  void
-  return_straight_line_plan(nav_msgs::srv::GetPlan::Response::SharedPtr res,
-                            const geometry_msgs::msg::PoseStamped &start,
+  /// Always exactly two poses (start, goal), regardless of append_goal_pose_.
+  nav_msgs::msg::Path
+  return_straight_line_plan(const geometry_msgs::msg::PoseStamped &start,
                             const geometry_msgs::msg::PoseStamped &goal);
 
   /**
@@ -169,8 +174,24 @@ public:
                                     VertexId v_goal, bool is_goal_explored,
                                     const Vec3 &p0, const Vec3 &p1);
 
-  bool plan(nav_msgs::srv::GetPlan::Request::SharedPtr req,
-            nav_msgs::srv::GetPlan::Response::SharedPtr res);
+  /**
+   * Core planner: search from @p start to @p goal and fill @p path.
+   *
+   * Shared by the GetPlan service/timer path (plan_from_request(), which
+   * additionally remembers the request for periodic re-planning) and the
+   * compute_path_to_pose action (compute_plan(), which does not become the
+   * periodic request). This method does not lock mtx_ itself -- every
+   * caller is a top-level entry point that already holds it for the whole
+   * call (see mtx_).
+   */
+  bool plan(const geometry_msgs::msg::PoseStamped &start,
+            const geometry_msgs::msg::PoseStamped &goal,
+            nav_msgs::msg::Path &path);
+
+  /// GetPlan request wrapper around plan(): remembers @p req in
+  /// last_request_ so planning_timer() can repeat it, then delegates.
+  bool plan_from_request(nav_msgs::srv::GetPlan::Request::SharedPtr req,
+                        nav_msgs::srv::GetPlan::Response::SharedPtr res);
 
   /**
    * Publish the rviz-only "map" cloud, if anybody is listening.
@@ -220,6 +241,8 @@ public:
    */
   void log_plan_summary() const;
 
+  /// Service/timer entry point: holds mtx_ for the whole call (see mtx_),
+  /// then delegates to plan_from_request().
   bool plan_safe(nav_msgs::srv::GetPlan::Request::SharedPtr req,
                  nav_msgs::srv::GetPlan::Response::SharedPtr res);
 
@@ -228,8 +251,31 @@ public:
   void request_plan(nav_msgs::srv::GetPlan::Request::SharedPtr req,
                     nav_msgs::srv::GetPlan::Response::SharedPtr res);
 
+  /**
+   * Action execute callback for compute_path_to_pose
+   * (nav2_msgs::action::ComputePathToPose), run by the SimpleActionServer on
+   * its own thread. Holds mtx_ for its whole duration (see mtx_): the start
+   * pose lookup, the goal transform and the plan() call.
+   *
+   * Adapted from upstream's computePlan(): the start pose comes from
+   * nav2_util::getCurrentPose(map_frame_, robot_frame_, request_tf_timeout_)
+   * instead of a hard-coded 0.1 s, and the goal is transformed with
+   * nav2_util::transformPoseInTargetFrame(..., request_tf_timeout_) instead
+   * of a hard-coded 1.0 s -- both now share the same TF budget as the
+   * GetPlan path (P5). Does not touch last_request_: the action is a one-off
+   * request, not the periodic re-planning source.
+   */
+  void compute_plan();
+
+  /// Log an exception caught by compute_plan() and fill in result->error_msg.
+  void exception_warning(const geometry_msgs::msg::PoseStamped &start,
+                        const geometry_msgs::msg::PoseStamped &goal,
+                        const std::string &planner_id,
+                        const std::exception &ex, std::string &error_msg);
+
   /// Drop the whole grid; returns the cell count it held before the clear.
-  /// Shared by both service callbacks below.
+  /// Shared by both service callbacks below; holds mtx_ for the whole call
+  /// (see mtx_) since it is their only entry point into grid_.
   size_t clear_map_impl();
 
   /// Service callback on clear_plan_map: nav2_msgs/ClearEntireCostmap, the
@@ -299,6 +345,9 @@ public:
    */
   bool maybe_evict_cells(const Point2f &robot);
 
+  /// Cloud-ingestion entry point: holds mtx_ for the whole call to
+  /// receive_cloud() (grid writes, eviction and the occupancy-grid publish;
+  /// see mtx_), then handles the exceptions receive_cloud() may throw.
   void receive_cloud_safe(
       const std::shared_ptr<const sensor_msgs::msg::PointCloud2> &input,
       int cloud_index);
@@ -327,8 +376,31 @@ protected:
    */
   void check_input_parameters(int num_input_clouds);
 
+  using ComputePathAction = nav2_msgs::action::ComputePathToPose;
+
   rclcpp::Node::SharedPtr nh_;
   rclcpp::TimerBase::SharedPtr planning_timer_;
+
+  std::unique_ptr<nav2_util::SimpleActionServer<ComputePathAction>>
+      action_server_;
+  /**
+   * Guards grid_ and every other piece of planner/search state a plan reads
+   * or writes, held for the whole duration of one plan or one cloud
+   * ingestion at each top-level entry point (plan_safe(), compute_plan(),
+   * receive_cloud_safe(), clear_map_impl()) -- never inside a helper they
+   * call, so nothing here locks recursively (upstream locked inside
+   * applySidelobesCosts(), which is called from plan() and would deadlock
+   * under this scheme).
+   *
+   * Replaces copying the grid per plan (upstream's `current_grid = grid_`
+   * under a mutex): ours can be tens of MB, so a copy per plan is not
+   * affordable.
+   *
+   * ponytail: one lock for the whole node, so cloud ingestion waits while a
+   * plan runs (milliseconds with A*, see astar_max_range_). Upgrade path if
+   * that ceiling ever matters: a grid snapshot/RCU instead of a shared mutex.
+   */
+  std::mutex mtx_;
 
   // Runtime change of max_costs_relative (recovery behaviour).
   std::shared_ptr<rclcpp::ParameterEventHandler> param_subscriber_;

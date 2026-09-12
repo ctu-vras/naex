@@ -282,6 +282,36 @@ time spent in these lookups is the `tf=` field of `perf plan:`.
 
   Both services share one implementation; only the response differs.
 
+#### Actions
+
+- `compute_path_to_pose` [[nav2_msgs/action/ComputePathToPose](https://docs.ros2.org/latest/api/nav2_msgs/action/ComputePathToPose.html)]
+  — a `nav2_util::SimpleActionServer`, spinning its execute callback on its
+  own thread. The start pose is the current robot pose
+  (`nav2_util::getCurrentPose(map_frame_, robot_frame_)`, timeout
+  `request_tf_timeout`); the goal is transformed into `map_frame` with
+  `nav2_util::transformPoseInTargetFrame` (same timeout) if it isn't already
+  in it. Both the action and `get_plan` search with the same core planner;
+  only `get_plan`/the periodic timer remember the request for re-planning,
+  the action does not. A search failure or a TF problem is reported as the
+  matching `ComputePathToPose::Result::error_code` (`NO_VALID_PATH`,
+  `TF_ERROR`, ...) instead of an exception reaching the client. Because the
+  action's execute callback runs on its own thread while everything else
+  (clouds, `get_plan`, the periodic timer) runs on the node's single-threaded
+  executor, a mutex (see "Concurrency" below) serializes them; an action goal
+  and a `get_plan` request or a cloud can therefore never touch `grid_` at
+  the same time, only queue behind each other.
+
+##### Concurrency
+
+One `std::mutex` is held for the whole duration of a plan (`plan_safe()`,
+`compute_plan()`) and of one cloud ingestion (`receive_cloud_safe()`,
+including eviction and the occupancy-grid publish) and of a map clear
+(`clear_map_impl()`), each acquired only at that top-level entry point — the
+grid is never copied per plan (it can be tens of MB). The ceiling this
+implies: cloud ingestion (and a competing plan) waits while another plan
+runs, typically milliseconds with A\*. If that ever becomes a problem, the
+upgrade path is a grid snapshot/RCU instead of a shared mutex.
+
 ### planner
 
 The `planner` node internally builds a **point** map (not a grid) from input

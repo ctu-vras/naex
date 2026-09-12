@@ -21,6 +21,11 @@
   <depend>nav_msgs</depend>
   <!-- grid_planner offers clear_plan_map as nav2_msgs/srv/ClearEntireCostmap. -->
   <depend>nav2_msgs</depend>
+  <!-- grid_planner's compute_path_to_pose action server. -->
+  <depend>nav2_util</depend>
+  <!-- Result-code exceptions (nav2_core::Planner*Error etc.) the action
+       server maps onto ComputePathToPose::Result::error_code. -->
+  <depend>nav2_core</depend>
   <depend>rclcpp</depend>
   <depend>rclcpp_components</depend>
   <depend>sensor_msgs</depend>

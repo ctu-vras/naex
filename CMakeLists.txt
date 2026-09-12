@@ -24,6 +24,10 @@ find_package(geometry_msgs REQUIRED)
 find_package(nav_msgs REQUIRED)
 # ClearEntireCostmap: clear_plan_map keeps the nav2 name/type the robots use.
 find_package(nav2_msgs REQUIRED)
+# compute_path_to_pose action server (nav2_util::SimpleActionServer) and its
+# result-code exceptions (nav2_core::Planner*Error etc.).
+find_package(nav2_util REQUIRED)
+find_package(nav2_core REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(rclcpp_components REQUIRED)
 find_package(sensor_msgs REQUIRED)
@@ -103,6 +107,8 @@ target_link_libraries(naex_grid
     ${std_msgs_TARGETS}
     ${std_srvs_TARGETS}
     ${visualization_msgs_TARGETS}
+    nav2_util::nav2_util_core
+    nav2_core::nav2_core
   PRIVATE
     naex_core
     tf2_eigen::tf2_eigen
