@@ -218,9 +218,9 @@ time spent in these lookups is the `tf=` field of `perf plan:`.
 
 - `map` [sensor_msgs/msg/PointCloud2] — the whole cost grid. Visualisation only,
   and **only published while the topic has at least one subscriber**: building it
-  costs 20 B per cell every planning cycle (4.3 MB at 216 k cells). A subscriber
-  that joins late (rviz, or a `ros2 bag record` started after the node) misses
-  the cycles before it connected.
+  costs 20 B per cell every planning cycle (4.3 MB at 216 k cells). Published
+  with `transient_local` QoS (depth 1), so a subscriber that joins after the
+  last publish still gets that one cycle instead of nothing.
 - `path` [[nav_msgs/msg/Path](https://docs.ros2.org/latest/api/nav_msgs/msg/Path.html)] — planned path.
   The first pose is the start pose of the request and the last one is the
   requested goal, so a goal checker downstream sees the real goal even when the

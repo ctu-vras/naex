@@ -231,8 +231,12 @@ Planner::Planner(rclcpp::Node::SharedPtr nh) : nh_(nh) {
   tf_ = std::make_shared<tf2_ros::Buffer>(nh_->get_clock());
   tf_sub_ = std::make_shared<tf2_ros::TransformListener>(*tf_);
 
+  // transient_local: a subscriber that connects after the last publish (rviz
+  // joining late, or a bag record started after the node) still gets the map
+  // once. Depth 1, so it only ever replays the latest one; still subscriber-
+  // guarded below at publish time (create_and_publish_map_cloud()).
   map_pub_ = nh_->create_publisher<sensor_msgs::msg::PointCloud2>(
-      "map", kPublisherQueueDepth);
+      "map", rclcpp::QoS(1).transient_local());
   path_pub_ =
       nh_->create_publisher<nav_msgs::msg::Path>("path", kPublisherQueueDepth);
   planning_freq_pub_ = nh_->create_publisher<std_msgs::msg::Float32>(
