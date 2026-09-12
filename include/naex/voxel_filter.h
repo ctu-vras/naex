@@ -1,15 +1,15 @@
 #pragma once
 
-#include <naex/clouds.h>
-#include <naex/filter.h>
-#include <naex/hash.h>
-#include <naex/timer.h>
-#include <naex/types.h>
 #include <algorithm>
 #include <cassert>
 #include <cmath>
 #include <cstddef>
 #include <limits>
+#include <naex/clouds.h>
+#include <naex/filter.h>
+#include <naex/hash.h>
+#include <naex/timer.h>
+#include <naex/types.h>
 #include <random>
 #include <rclcpp/rclcpp.hpp>
 #include <sensor_msgs/msg/point_cloud2.hpp>

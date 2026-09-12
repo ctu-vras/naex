@@ -92,7 +92,9 @@ public:
     return *(begin_.get() + i);
   }
 
-  template <typename D> D *data() { return reinterpret_cast<D *>(begin_.get()); }
+  template <typename D> D *data() {
+    return reinterpret_cast<D *>(begin_.get());
+  }
 
   template <typename D> const D *data() const {
     return reinterpret_cast<const D *>(begin_.get());

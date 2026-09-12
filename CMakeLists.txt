@@ -2,14 +2,14 @@ cmake_minimum_required(VERSION 3.16)
 project(naex)
 
 if(NOT CMAKE_CXX_STANDARD)
-  set(CMAKE_CXX_STANDARD 17)
-  set(CMAKE_CXX_STANDARD_REQUIRED ON)
+    set(CMAKE_CXX_STANDARD 17)
+    set(CMAKE_CXX_STANDARD_REQUIRED ON)
 endif()
 if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
-  set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
+    set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
 endif()
 if(CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
-  add_compile_options(-Wall -Wextra -Wpedantic)
+    add_compile_options(-Wall -Wextra -Wpedantic)
 endif()
 
 # --- dependencies ---------------------------------------------------------
@@ -42,8 +42,8 @@ find_package(visualization_msgs REQUIRED)
 find_path(FLANN_INCLUDE_DIR NAMES flann/flann.hpp)
 find_library(LZ4_LIBRARY NAMES lz4)
 if(NOT FLANN_INCLUDE_DIR OR NOT LZ4_LIBRARY)
-  message(FATAL_ERROR
-    "FLANN (libflann-dev) and LZ4 (liblz4-dev) are required by naex")
+    message(FATAL_ERROR
+        "FLANN (libflann-dev) and LZ4 (liblz4-dev) are required by naex")
 endif()
 add_library(naex::flann INTERFACE IMPORTED)
 set_target_properties(naex::flann PROPERTIES
@@ -252,30 +252,30 @@ install(DIRECTORY config
 
 # --- tests ----------------------------------------------------------------
 if(BUILD_TESTING)
-  find_package(ament_lint_auto REQUIRED)
-  # clang-format (.clang-format) is the formatting authority here; uncrustify
-  # and cpplint disagree with it, so skip both instead of reformatting.
-  set(ament_cmake_uncrustify_FOUND TRUE)
-  set(ament_cmake_cpplint_FOUND TRUE)
-  # The ROS 1 tree still being ported trips these; re-enable once it is gone.
-  set(ament_cmake_copyright_FOUND TRUE)
-  set(ament_cmake_flake8_FOUND TRUE)
-  set(ament_cmake_pep257_FOUND TRUE)
-  ament_lint_auto_find_test_dependencies()
+    find_package(ament_lint_auto REQUIRED)
+    # clang-format (.clang-format) is the formatting authority here; uncrustify
+    # and cpplint disagree with it, so skip both instead of reformatting.
+    set(ament_cmake_uncrustify_FOUND TRUE)
+    set(ament_cmake_cpplint_FOUND TRUE)
+    # The ROS 1 tree still being ported trips these; re-enable once it is gone.
+    set(ament_cmake_copyright_FOUND TRUE)
+    set(ament_cmake_flake8_FOUND TRUE)
+    set(ament_cmake_pep257_FOUND TRUE)
+    ament_lint_auto_find_test_dependencies()
 
-  find_package(ament_cmake_gtest REQUIRED)
-  ament_add_gtest(test_grid test/test_grid.cpp)
-  if(TARGET test_grid)
-    target_include_directories(test_grid PRIVATE
-      $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>)
-    target_link_libraries(test_grid
-      Boost::graph
-      Eigen3::Eigen
-      rclcpp::rclcpp
-      ${nav_msgs_TARGETS}
-      ${sensor_msgs_TARGETS}
-      ${visualization_msgs_TARGETS})
-  endif()
+    find_package(ament_cmake_gtest REQUIRED)
+    ament_add_gtest(test_grid test/test_grid.cpp)
+    if(TARGET test_grid)
+        target_include_directories(test_grid PRIVATE
+            $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>)
+        target_link_libraries(test_grid
+            Boost::graph
+            Eigen3::Eigen
+            rclcpp::rclcpp
+            ${nav_msgs_TARGETS}
+            ${sensor_msgs_TARGETS}
+            ${visualization_msgs_TARGETS})
+    endif()
 endif()
 
 ament_package()

@@ -214,8 +214,9 @@ void Map::merge(const flann::Matrix<Elem> &points,
   float rebuild_threshold = (index_->size() + 1000.f) / index_->size();
   index_->addPoints(position_matrix(start), rebuild_threshold);
 
-  RCLCPP_INFO(map_logger(), "%lu points merged into map with %lu points "
-                            "(%.3f s).",
+  RCLCPP_INFO(map_logger(),
+              "%lu points merged into map with %lu points "
+              "(%.3f s).",
               size_t(size() - start), size_t(size()), t.seconds_elapsed());
 }
 

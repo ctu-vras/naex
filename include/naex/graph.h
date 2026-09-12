@@ -1,10 +1,10 @@
 #pragma once
 
+#include <boost/graph/graph_traits.hpp>
+#include <boost/graph/properties.hpp>
 #include <naex/iterators.h>
 #include <naex/map.h>
 #include <naex/types.h>
-#include <boost/graph/graph_traits.hpp>
-#include <boost/graph/properties.hpp>
 #include <utility>
 
 // Boost graph adapter for naex::Graph / naex::EdgeCosts.

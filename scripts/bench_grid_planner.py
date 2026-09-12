@@ -124,9 +124,7 @@ class BenchGridPlanner(Node):
         self.group = ReentrantCallbackGroup()
         self.cloud_pub = self.create_publisher(PointCloud2, "input_cloud_0", 2)
         self.tf_broadcaster = TransformBroadcaster(self)
-        self.client = self.create_client(
-            GetPlan, "get_plan", callback_group=self.group
-        )
+        self.client = self.create_client(GetPlan, "get_plan", callback_group=self.group)
         self.create_subscription(
             Log, "/rosout", self.on_log, 100, callback_group=self.group
         )
@@ -220,7 +218,10 @@ class BenchGridPlanner(Node):
             inside = (np.abs(xs - ox) <= r) & (np.abs(ys - oy) <= r)
             cost[inside] = float(self.obstacle_cost)
         # Keep the robot cell and the goal cell free so a plan always exists.
-        for px, py in ((0.0, 0.0), (self.goal_x - self.robot_x, self.goal_y - self.robot_y)):
+        for px, py in (
+            (0.0, 0.0),
+            (self.goal_x - self.robot_x, self.goal_y - self.robot_y),
+        ):
             near = (np.abs(xs - px) <= 1.0) & (np.abs(ys - py) <= 1.0)
             cost[near] = float(self.free_cost)
 
@@ -409,9 +410,7 @@ class BenchGridPlanner(Node):
         full timeout).
         """
         window = self.tf_gap_window()
-        gaps = [
-            (b - a, a) for a, b in zip(self.path_times, self.path_times[1:])
-        ]
+        gaps = [(b - a, a) for a, b in zip(self.path_times, self.path_times[1:])]
         out = {
             "tf_gap_s": float(self.tf_gap),
             "path_msgs": len(self.path_times),
@@ -435,9 +434,7 @@ class BenchGridPlanner(Node):
         if after:
             out["path_gap_max_from_tf_gap_s"] = max(after)
         lat = [
-            d
-            for d, t0 in zip(latencies, req_starts)
-            if t0 < end and (t0 + d) > start
+            d for d, t0 in zip(latencies, req_starts) if t0 < end and (t0 + d) > start
         ]
         out["requests_in_tf_gap"] = len(lat)
         if lat:
@@ -487,9 +484,7 @@ class BenchGridPlanner(Node):
         # guard, and the time the (amortised) map_range compaction took.
         cloud_keys = ("pts", "skipped", "tf", "points", "evict", "cells")
         cloud = self.cloud_lines[1:] if len(self.cloud_lines) > 1 else self.cloud_lines
-        cloud_mean, cloud_min, cloud_median, cloud_max = self._stats(
-            cloud, cloud_keys
-        )
+        cloud_mean, cloud_min, cloud_median, cloud_max = self._stats(cloud, cloud_keys)
         evict_mean, evict_min, evict_median, evict_max = self._stats(
             self.evict_lines, ("map_range", "cells_before", "cells_after", "removed")
         )
@@ -501,7 +496,9 @@ class BenchGridPlanner(Node):
             "cloud_points": int(self.published_points),
             "requests_total": n_total,
             "requests_recorded": len(latencies),
-            "latency_mean_s": statistics.fmean(latencies) if latencies else float("nan"),
+            "latency_mean_s": statistics.fmean(latencies)
+            if latencies
+            else float("nan"),
             "latency_p50_s": qs[0.5],
             "latency_p90_s": qs[0.9],
             "latency_max_s": qs[1.0],

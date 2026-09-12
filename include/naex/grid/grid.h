@@ -82,8 +82,7 @@ struct Costs {
              std::numeric_limits<Cost>::quiet_NaN()} {}
   /// Explicit so that a scalar (e.g. a vertex id) never silently converts to
   /// Costs; see B1 in the 2026-09-12 review.
-  explicit Costs(Cost c0,
-                 Cost c1 = std::numeric_limits<Cost>::quiet_NaN(),
+  explicit Costs(Cost c0, Cost c1 = std::numeric_limits<Cost>::quiet_NaN(),
                  Cost c2 = std::numeric_limits<Cost>::quiet_NaN(),
                  Cost c3 = std::numeric_limits<Cost>::quiet_NaN())
       : data{c0, c1, c2, c3} {}
@@ -502,9 +501,9 @@ protected:
    * retained region needs no special case, and new id <= old id makes the pass
    * safe in place — the same argument erase_cells() uses for the cells
    * themselves.  Keeping the capacity also matters: a grid that is compacted
-   * again and again while it regrows would otherwise reallocate a multi-megabyte
-   * block per eviction.  This lives inside erase_cells() so that no caller can
-   * forget it (P2 / the Eviction contract).
+   * again and again while it regrows would otherwise reallocate a
+   * multi-megabyte block per eviction.  This lives inside erase_cells() so that
+   * no caller can forget it (P2 / the Eviction contract).
    */
   void remap_neighbors(const Eviction &ev) {
     for (CellId v = 0; v < static_cast<CellId>(ev.before); ++v) {

@@ -11,9 +11,13 @@
 
 namespace naex {
 
-template <typename T> inline T radians(const T &x) { return x / T(180) * T(M_PI); }
+template <typename T> inline T radians(const T &x) {
+  return x / T(180) * T(M_PI);
+}
 
-template <typename T> inline T degrees(const T &x) { return x / T(M_PI) * T(180); }
+template <typename T> inline T degrees(const T &x) {
+  return x / T(M_PI) * T(180);
+}
 
 template <typename T> inline T azimuth(const T x, const T y) {
   return std::atan2(y, x);
@@ -68,8 +72,8 @@ Value inline inclination(const Vec3 &x) {
 // Vec4 plane_from_points(T& p0, T& p1, T& p2)
 template <typename Derived>
 inline Vec4 plane_from_points(const Eigen::MatrixBase<Derived> &p0,
-                       const Eigen::MatrixBase<Derived> &p1,
-                       const Eigen::MatrixBase<Derived> &p2) {
+                              const Eigen::MatrixBase<Derived> &p1,
+                              const Eigen::MatrixBase<Derived> &p2) {
   Vec3 n = (p1 - p0).cross(p2 - p0).normalized();
   Value d = -n.dot(p0);
   //    return Vec4(n, d);

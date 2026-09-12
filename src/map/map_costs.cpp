@@ -19,8 +19,8 @@ bool Map::point_empty(const Point &p) const {
 bool Map::point_near(Index i, const std::vector<Value> &points,
                      Value radius) const {
   for (size_t j = 0; j + 2 < points.size(); j += 3) {
-    if ((ConstVec3Map(cloud_[i].position_) - ConstVec3Map(&points[j]))
-            .norm() <= radius) {
+    if ((ConstVec3Map(cloud_[i].position_) - ConstVec3Map(&points[j])).norm() <=
+        radius) {
       return true;
     }
   }
@@ -33,8 +33,8 @@ Cost Map::compute_edge_cost(const Edge &e) {
   const auto v1 = target(e);
 
   if (v0 == v1) {
-    RCLCPP_WARN_THROTTLE(map_logger(), clock_, 1000,
-                         "Graph loop at vertex %i.", v0);
+    RCLCPP_WARN_THROTTLE(map_logger(), clock_, 1000, "Graph loop at vertex %i.",
+                         v0);
     return std::numeric_limits<Cost>::infinity();
   }
   if (!(cloud_[v1].flags_ & TRAVERSABLE) || (cloud_[v1].flags_ & EDGE)) {
@@ -65,8 +65,8 @@ Cost Map::compute_edge_cost(const Edge &e) {
   }
   // Penalize by edge and obstacle points nearby.
   c *= 1 + Value(cloud_[v1].num_edge_neighbors_) / Neighborhood::K_NEIGHBORS;
-  c *= 1 + Value(cloud_[v1].num_obstacle_neighbors_) /
-               Neighborhood::K_NEIGHBORS;
+  c *=
+      1 + Value(cloud_[v1].num_obstacle_neighbors_) / Neighborhood::K_NEIGHBORS;
   // TODO: Make distance correspond to expected travel time.
   return c;
 }

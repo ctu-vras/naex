@@ -20,8 +20,8 @@ int main(int argc, char **argv) {
 
   // Reproduce the ROS 1 MultiThreadedSpinner(8); the planner uses a reentrant
   // callback group and guards its data with its own mutexes.
-  rclcpp::executors::MultiThreadedExecutor executor(
-      rclcpp::ExecutorOptions(), 8);
+  rclcpp::executors::MultiThreadedExecutor executor(rclcpp::ExecutorOptions(),
+                                                    8);
   executor.add_node(node);
   executor.spin();
   rclcpp::shutdown();

@@ -15,8 +15,8 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
-#include <limits>
 #include <geometry_msgs/msg/transform.hpp>
+#include <limits>
 #include <rclcpp/rclcpp.hpp>
 #include <sensor_msgs/msg/point_cloud2.hpp>
 #include <sensor_msgs/point_cloud2_iterator.hpp>
@@ -87,8 +87,8 @@ void Map::update_occupancy_organized(
   params.cores = 0;
   params.sorted = true;
   typedef std::pair<Index, Value> IVP;
-  std::vector<IVP> fan(4,
-                       {INVALID_VERTEX, std::numeric_limits<Value>::quiet_NaN()});
+  std::vector<IVP> fan(
+      4, {INVALID_VERTEX, std::numeric_limits<Value>::quiet_NaN()});
   // Comparator for descending order of second member.
   const auto comp = [](const IVP &a, const IVP &b) {
     return a.second > b.second;
@@ -121,9 +121,8 @@ void Map::update_occupancy_organized(
                         : -std::numeric_limits<Value>::infinity();
 
     ++k;
-    fan[k].first = c < Index(cloud.width) - 1
-                       ? r * Index(cloud.width) + c + 1
-                       : Index(INVALID_VERTEX);
+    fan[k].first = c < Index(cloud.width) - 1 ? r * Index(cloud.width) + c + 1
+                                              : Index(INVALID_VERTEX);
     fan[k].second = fan[k].first != INVALID_VERTEX
                         ? ConstVec3Map(&dirs[3 * fan[k].first]).dot(dir)
                         : -std::numeric_limits<Value>::infinity();
@@ -140,10 +139,9 @@ void Map::update_occupancy_organized(
     std::sort(fan.begin(), fan.end(), comp);
     // Construct plane from three points of nearest directions.
     // Test signed distance from the plane to assess occlusion.
-    Vec4 plane =
-        plane_from_points(ConstVec3Map(&(x_begin + i)[0]),
-                          ConstVec3Map(&(x_begin + fan[0].first)[0]),
-                          ConstVec3Map(&(x_begin + fan[1].first)[0]));
+    Vec4 plane = plane_from_points(ConstVec3Map(&(x_begin + i)[0]),
+                                   ConstVec3Map(&(x_begin + fan[0].first)[0]),
+                                   ConstVec3Map(&(x_begin + fan[1].first)[0]));
 
     // Make sure positive distance is towards sensor at [0, 0, 0],
     // i.e., outside from surface.
@@ -194,8 +192,7 @@ void Map::update_occupancy_organized(
               "%lu above, %lu occupied, %lu empty (%.6f s).",
               q_map.nn_[0].size(), size_t(n_modified), size_t(n_above),
               size_t(n_occupied), size_t(n_empty), t_part.seconds_elapsed());
-  RCLCPP_INFO(map_logger(), "Occupancy updated (%.3f s).",
-              t.seconds_elapsed());
+  RCLCPP_INFO(map_logger(), "Occupancy updated (%.3f s).", t.seconds_elapsed());
 }
 
 void Map::update_occupancy_projection(
@@ -272,16 +269,13 @@ void Map::update_occupancy_projection(
                    : r0 * Index(cloud.width) + c0 - 1;
 
     ConstVec3Map p0(&(x_begin + i0)[0]);
-    if (!std::isfinite(p0(0)) || !std::isfinite(p0(1)) ||
-        !std::isfinite(p0(2)))
+    if (!std::isfinite(p0(0)) || !std::isfinite(p0(1)) || !std::isfinite(p0(2)))
       continue;
     ConstVec3Map p1(&(x_begin + i1)[0]);
-    if (!std::isfinite(p1(0)) || !std::isfinite(p1(1)) ||
-        !std::isfinite(p1(2)))
+    if (!std::isfinite(p1(0)) || !std::isfinite(p1(1)) || !std::isfinite(p1(2)))
       continue;
     ConstVec3Map p2(&(x_begin + i2)[0]);
-    if (!std::isfinite(p2(0)) || !std::isfinite(p2(1)) ||
-        !std::isfinite(p2(2)))
+    if (!std::isfinite(p2(0)) || !std::isfinite(p2(1)) || !std::isfinite(p2(2)))
       continue;
     Vec4 plane = plane_from_points(p0, p1, p2);
 

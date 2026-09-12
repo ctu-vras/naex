@@ -113,7 +113,8 @@ void Planner::configure() {
   nh_->declare_parameter<float>("clearance_high", map_.clearance_high_);
   nh_->declare_parameter<float>("min_points_obstacle",
                                 map_.min_points_obstacle_);
-  nh_->declare_parameter<float>("max_ground_diff_std", map_.max_ground_diff_std_);
+  nh_->declare_parameter<float>("max_ground_diff_std",
+                                map_.max_ground_diff_std_);
   nh_->declare_parameter<float>("max_mean_abs_ground_diff",
                                 map_.max_mean_abs_ground_diff_);
   nh_->declare_parameter<float>("edge_min_centroid_offset",
@@ -216,10 +217,8 @@ void Planner::configure() {
     input_cloud_subs_.push_back(
         nh_->create_subscription<sensor_msgs::msg::PointCloud2>(
             ss.str(), queue_size_,
-            [this](
-                const std::shared_ptr<const sensor_msgs::msg::PointCloud2> &msg) {
-              this->input_cloud_received_safe(msg);
-            },
+            [this](const std::shared_ptr<const sensor_msgs::msg::PointCloud2>
+                       &msg) { this->input_cloud_received_safe(msg); },
             sub_opts));
   }
 
@@ -234,10 +233,9 @@ void Planner::configure() {
   }
 
   if (planning_freq_ > 0.f) {
-    planning_timer_ =
-        nh_->create_wall_timer(period_from_freq(planning_freq_),
-                               [this]() { this->planning_timer_cb(); },
-                               callback_group_);
+    planning_timer_ = nh_->create_wall_timer(
+        period_from_freq(planning_freq_),
+        [this]() { this->planning_timer_cb(); }, callback_group_);
     RCLCPP_INFO(nh_->get_logger(),
                 "Re-plan automatically at %.1f Hz using the last request.",
                 planning_freq_);
@@ -258,19 +256,20 @@ void Planner::configure() {
 
   // Waiting for other robots and bootstrapping the map needs the clock and
   // the TF buffer, i.e. a spinning executor. Do it from a one-shot timer.
-  init_timer_ = nh_->create_wall_timer(std::chrono::milliseconds(1),
-                                       [this]() {
-                                         init_timer_->cancel();
-                                         this->initialize();
-                                       },
-                                       callback_group_);
+  init_timer_ = nh_->create_wall_timer(
+      std::chrono::milliseconds(1),
+      [this]() {
+        init_timer_->cancel();
+        this->initialize();
+      },
+      callback_group_);
 }
 
 void Planner::initialize() {
   Timer t;
   RCLCPP_INFO(nh_->get_logger(), "Initializing. Waiting for other robots...");
-  find_robots(map_frame_, rclcpp::Time(0, 0, nh_->get_clock()->get_clock_type()),
-              15.f);
+  find_robots(map_frame_,
+              rclcpp::Time(0, 0, nh_->get_clock()->get_clock_type()), 15.f);
   Lock lock(initialized_mutex_);
   initialized_ = true;
   time_initialized_ = nh_->get_clock()->now().seconds();
@@ -284,7 +283,8 @@ void Planner::update_params() {
   map_.clearance_radius_ =
       float(nh_->get_parameter("clearance_radius").as_double());
   map_.clearance_low_ = float(nh_->get_parameter("clearance_low").as_double());
-  map_.clearance_high_ = float(nh_->get_parameter("clearance_high").as_double());
+  map_.clearance_high_ =
+      float(nh_->get_parameter("clearance_high").as_double());
   map_.min_points_obstacle_ =
       float(nh_->get_parameter("min_points_obstacle").as_double());
   map_.max_ground_diff_std_ =
@@ -307,16 +307,17 @@ void Planner::bootstrap_map() {
   RCLCPP_INFO(nh_->get_logger(),
               "Bootstrapping map with traversable robot neighborhood.");
 
-  const int n =
-      int(4 * map_.clearance_radius_ / map_.points_min_dist_ + 1);
+  const int n = int(4 * map_.clearance_radius_ / map_.points_min_dist_ + 1);
   const int n_pts = n * n;
   const auto now = nh_->get_clock()->now();
 
   Eigen::Isometry3f robot_to_map;
   try {
-    const auto cloud_to_map_tf = tf_->lookupTransform(
-        map_frame_, robot_frame_, tf2::TimePointZero, tf2::durationFromSec(15.));
-    robot_to_map = tf2::transformToEigen(cloud_to_map_tf.transform).cast<float>();
+    const auto cloud_to_map_tf =
+        tf_->lookupTransform(map_frame_, robot_frame_, tf2::TimePointZero,
+                             tf2::durationFromSec(15.));
+    robot_to_map =
+        tf2::transformToEigen(cloud_to_map_tf.transform).cast<float>();
   } catch (const tf2::TransformException &ex) {
     RCLCPP_ERROR(nh_->get_logger(),
                  "Could not bootstrap map due to missing transform from %s "
@@ -568,8 +569,8 @@ Buffer<Elem> Planner::other_viewpoint_dist(const flann::Matrix<Elem> &points) {
     vp_copy = other_viewpoints_;
   }
   const size_t n_vp = vp_copy.size();
-  RCLCPP_INFO(nh_->get_logger(),
-              "Number of viewpoints from other robots: %lu.", n_vp);
+  RCLCPP_INFO(nh_->get_logger(), "Number of viewpoints from other robots: %lu.",
+              n_vp);
   flann::Matrix<Elem> vp(vp_copy.data()->data(), n_vp, 3);
   flann::Index<flann::L2_3D<Elem>> vp_index(vp,
                                             flann::KDTreeSingleIndexParams());
@@ -578,8 +579,7 @@ Buffer<Elem> Planner::other_viewpoint_dist(const flann::Matrix<Elem> &points) {
   return vp_query.dist_buf_;
 }
 
-void Planner::input_map_received(
-    const sensor_msgs::msg::PointCloud2 &cloud) {
+void Planner::input_map_received(const sensor_msgs::msg::PointCloud2 &cloud) {
   Lock cloud_lock(map_.cloud_mutex_);
   Lock index_lock(map_.index_mutex_);
   Lock dirty_lock(map_.dirty_mutex_);
@@ -639,9 +639,9 @@ bool Planner::plan(GetPlan::Request::SharedPtr req,
                                tf2::durationFromSec(5.));
       transform_to_pose(tf, start);
       // If the robot is near the previous goal, try to plan from this goal.
-      const auto last_goal_valid = valid_point(last_goal_.pose.position.x,
-                                               last_goal_.pose.position.y,
-                                               last_goal_.pose.position.z);
+      const auto last_goal_valid =
+          valid_point(last_goal_.pose.position.x, last_goal_.pose.position.y,
+                      last_goal_.pose.position.z);
       if (last_goal_valid) {
         Eigen::Vector3d pos, last_goal;
         tf2::fromMsg(tf.transform.translation, pos);
@@ -818,8 +818,9 @@ bool Planner::plan(GetPlan::Request::SharedPtr req,
   }
 
   if (v_goal == INVALID_VERTEX) {
-    RCLCPP_ERROR(nh_->get_logger(), "No valid path (with cost >= %.1f s)/goal "
-                                    "found.",
+    RCLCPP_ERROR(nh_->get_logger(),
+                 "No valid path (with cost >= %.1f s)/goal "
+                 "found.",
                  min_path_cost_);
     return false;
   }
@@ -947,8 +948,8 @@ std::vector<Value> Planner::find_robots(const std::string &frame,
     if (f == robot_frame_) {
       continue;
     }
-    const auto timeout_duration = rclcpp::Duration::from_seconds(std::max(
-        timeout - (nh_->get_clock()->now() - stamp).seconds(), 0.));
+    const auto timeout_duration = rclcpp::Duration::from_seconds(
+        std::max(timeout - (nh_->get_clock()->now() - stamp).seconds(), 0.));
     geometry_msgs::msg::TransformStamped tf;
     try {
       tf = tf_->lookupTransform(map_frame_, f, stamp, timeout_duration);
@@ -960,8 +961,9 @@ std::vector<Value> Planner::find_robots(const std::string &frame,
     robots.push_back(static_cast<Value>(tf.transform.translation.x));
     robots.push_back(static_cast<Value>(tf.transform.translation.y));
     robots.push_back(static_cast<Value>(tf.transform.translation.z));
-    RCLCPP_INFO(nh_->get_logger(), "Robot %s found in %s at [%.1f, %.1f, %.1f].",
-                f.c_str(), map_frame_.c_str(), tf.transform.translation.x,
+    RCLCPP_INFO(nh_->get_logger(),
+                "Robot %s found in %s at [%.1f, %.1f, %.1f].", f.c_str(),
+                map_frame_.c_str(), tf.transform.translation.x,
                 tf.transform.translation.y, tf.transform.translation.z);
   }
   RCLCPP_INFO(nh_->get_logger(),
@@ -1047,9 +1049,8 @@ void Planner::input_cloud_received(
   const double wait =
       std::max(5.0 - (nh_->get_clock()->now() - stamp).seconds(), 0.0);
   geometry_msgs::msg::TransformStamped cloud_to_map;
-  cloud_to_map =
-      tf_->lookupTransform(map_frame_, input->header.frame_id, stamp,
-                           rclcpp::Duration::from_seconds(wait));
+  cloud_to_map = tf_->lookupTransform(map_frame_, input->header.frame_id, stamp,
+                                      rclcpp::Duration::from_seconds(wait));
   RCLCPP_DEBUG(nh_->get_logger(),
                "Had to wait %.3f s for input cloud transform.",
                t_tf.seconds_elapsed());

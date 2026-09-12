@@ -1,14 +1,14 @@
 #pragma once
 
+#include <algorithm>
+#include <cmath>
+#include <cstddef>
+#include <limits>
 #include <naex/flann.h>
 #include <naex/nearest_neighbors.h>
 #include <naex/timer.h>
 #include <naex/types.h>
 #include <naex/voxel_filter.h>
-#include <algorithm>
-#include <cmath>
-#include <cstddef>
-#include <limits>
 #include <rclcpp/rclcpp.hpp>
 #include <vector>
 
@@ -188,8 +188,8 @@ void collect_rewards(std::vector<P> &points, const std::vector<Index> &indices,
   // Create neighborhood graph for subsampled points.
   flann::Matrix<float> mat(reward_pts[0].position_, reward_pts.size(), 3,
                            sizeof(RewardPoint));
-  auto index = flann::Index<flann::L2_3D<Value>>(
-      mat, flann::KDTreeSingleIndexParams());
+  auto index =
+      flann::Index<flann::L2_3D<Value>>(mat, flann::KDTreeSingleIndexParams());
   index.buildIndex();
   RadiusQuery<Value> q(index, mat, max_collect_dist);
   std::vector<Index> all;
@@ -214,8 +214,7 @@ void collect_rewards(std::vector<P> &points, const std::vector<Index> &indices,
   RCLCPP_INFO(reward_logger(),
               "Collected rewards for %lu input points or %lu %.2f-m voxels "
               "(%.3f s).",
-              indices.size(), reward_pts.size(), bin_size,
-              t.seconds_elapsed());
+              indices.size(), reward_pts.size(), bin_size, t.seconds_elapsed());
 }
 
 } // namespace naex

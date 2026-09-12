@@ -27,20 +27,17 @@ void Map::initialize_cloud(sensor_msgs::msg::PointCloud2 &cloud) const {
   append_field<decltype(Point().normal_support_)>("normal_support", 1, cloud);
 
   cloud.point_step = uint32_t(offsetof(Point, ground_diff_std_));
-  append_field<decltype(Point().ground_diff_std_)>("ground_diff_std", 1,
-                                                   cloud);
+  append_field<decltype(Point().ground_diff_std_)>("ground_diff_std", 1, cloud);
 
   cloud.point_step = uint32_t(offsetof(Point, min_ground_diff_));
-  append_field<decltype(Point().min_ground_diff_)>("min_ground_diff", 1,
-                                                   cloud);
+  append_field<decltype(Point().min_ground_diff_)>("min_ground_diff", 1, cloud);
 
   cloud.point_step = uint32_t(offsetof(Point, max_ground_diff_));
-  append_field<decltype(Point().max_ground_diff_)>("max_ground_diff", 1,
-                                                   cloud);
+  append_field<decltype(Point().max_ground_diff_)>("max_ground_diff", 1, cloud);
 
   cloud.point_step = uint32_t(offsetof(Point, mean_abs_ground_diff_));
-  append_field<decltype(Point().mean_abs_ground_diff_)>(
-      "mean_abs_ground_diff", 1, cloud);
+  append_field<decltype(Point().mean_abs_ground_diff_)>("mean_abs_ground_diff",
+                                                        1, cloud);
 
   cloud.point_step = uint32_t(offsetof(Point, viewpoint_));
   append_field<decltype(Point().viewpoint_[0])>("viewpoint_x", 1, cloud);
@@ -55,8 +52,8 @@ void Map::initialize_cloud(sensor_msgs::msg::PointCloud2 &cloud) const {
                                                     cloud);
 
   cloud.point_step = uint32_t(offsetof(Point, dist_to_other_actors_));
-  append_field<decltype(Point().dist_to_other_actors_)>(
-      "dist_to_other_actors", 1, cloud);
+  append_field<decltype(Point().dist_to_other_actors_)>("dist_to_other_actors",
+                                                        1, cloud);
 
   cloud.point_step = uint32_t(offsetof(Point, other_actors_last_visit_));
   append_field<decltype(Point().other_actors_last_visit_)>(

@@ -66,9 +66,8 @@ void compute_traversability(
 
   const float support_radius2 = support_radius * support_radius;
   const float inclination_radius2 = inclination_radius * inclination_radius;
-  const float radius =
-      std::max(std::max(inclination_radius, support_radius),
-               std::hypot(clearance_radius, clearance_high));
+  const float radius = std::max(std::max(inclination_radius, support_radius),
+                                std::hypot(clearance_radius, clearance_high));
 
   RadiusQuery<float> query(index, position_in, radius, -1);
   [[maybe_unused]] const size_t n_pts = num_points(input);
@@ -172,10 +171,9 @@ void Traversability::process(const sensor_msgs::msg::PointCloud2 &input,
   // TODO: Apply box, range, and voxel filters.
   sensor_msgs::msg::PointCloud2 traversability;
   compute_traversability(input, transform, min_z_, max_z_, support_radius_,
-                         min_support_, inclination_radius_,
-                         inclination_weight_, normal_std_weight_,
-                         clearance_radius_, clearance_low_, clearance_high_,
-                         obstacle_weight_, traversability);
+                         min_support_, inclination_radius_, inclination_weight_,
+                         normal_std_weight_, clearance_radius_, clearance_low_,
+                         clearance_high_, obstacle_weight_, traversability);
   if (remove_low_support_) {
     remove_low_support(traversability, min_support_, output);
   } else {

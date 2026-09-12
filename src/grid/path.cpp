@@ -1,9 +1,9 @@
 #include "naex/grid/path.h"
 
 #include "naex/types.h"
-#include <geometry_msgs/msg/pose_stamped.hpp>
 #include <algorithm>
 #include <cassert>
+#include <geometry_msgs/msg/pose_stamped.hpp>
 
 namespace naex {
 namespace grid {

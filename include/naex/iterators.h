@@ -1,4 +1,5 @@
 #pragma once
+
 #include "naex/types.h"
 
 namespace naex {
@@ -76,7 +77,7 @@ public:
   typedef std::random_access_iterator_tag iterator_category;
   typedef V value_type;
   typedef std::ptrdiff_t difference_type;
-  typedef V* pointer;
+  typedef V *pointer;
   typedef V reference;
   ValueIterator() : value_{} {}
   ValueIterator(const V &val) : value_(val) {}
@@ -100,7 +101,9 @@ public:
   V &operator*() { return value_; }
   const V &operator*() const { return value_; }
 
-  bool operator==(const ValueIterator<V> &other) const { return value_ == other.value_; }
+  bool operator==(const ValueIterator<V> &other) const {
+    return value_ == other.value_;
+  }
 
 private:
   V value_;

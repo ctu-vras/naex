@@ -1,11 +1,11 @@
 #pragma once
 
-#include <naex/buffer.h>
 #include <Eigen/Dense>
 #include <cstdarg>
 #include <cstddef>
 #include <cstdint>
 #include <flann/flann.hpp>
+#include <naex/buffer.h>
 
 namespace naex {
 
@@ -56,8 +56,7 @@ public:
     return i_0 * stride_[0] + i_1 * stride_[1] + i_2 * stride_[2];
   }
   T &value(size_t i) {
-    return reinterpret_cast<T &>(
-        reinterpret_cast<uint8_t *>(data_.begin())[i]);
+    return reinterpret_cast<T &>(reinterpret_cast<uint8_t *>(data_.begin())[i]);
   }
   const T &value(size_t i) const {
     return reinterpret_cast<const T &>(

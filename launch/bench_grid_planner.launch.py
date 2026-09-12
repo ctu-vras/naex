@@ -187,28 +187,18 @@ def generate_launch_description():
             },
             {
                 "cell_size": ParameterValue(cfg["cell_size"], value_type=float),
-                "neighborhood": ParameterValue(
-                    cfg["neighborhood"], value_type=int
-                ),
-                "planning_freq": ParameterValue(
-                    cfg["planning_freq"], value_type=float
-                ),
-                "tf_timeout": ParameterValue(
-                    cfg["tf_timeout"], value_type=float
-                ),
+                "neighborhood": ParameterValue(cfg["neighborhood"], value_type=int),
+                "planning_freq": ParameterValue(cfg["planning_freq"], value_type=float),
+                "tf_timeout": ParameterValue(cfg["tf_timeout"], value_type=float),
                 "cloud_tf_timeout": ParameterValue(
                     cfg["cloud_tf_timeout"], value_type=float
                 ),
                 "request_tf_timeout": ParameterValue(
                     cfg["request_tf_timeout"], value_type=float
                 ),
-                "input_range": ParameterValue(
-                    cfg["input_range"], value_type=float
-                ),
+                "input_range": ParameterValue(cfg["input_range"], value_type=float),
                 "map_range": ParameterValue(cfg["map_range"], value_type=float),
-                "evict_period": ParameterValue(
-                    cfg["evict_period"], value_type=float
-                ),
+                "evict_period": ParameterValue(cfg["evict_period"], value_type=float),
                 "use_astar": ParameterValue(cfg["use_astar"], value_type=bool),
                 "astar_max_range": ParameterValue(
                     cfg["astar_max_range"], value_type=float

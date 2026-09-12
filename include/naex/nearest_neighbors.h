@@ -1,11 +1,11 @@
 #pragma once
 
-#include <naex/array.h>
-#include <naex/buffer.h>
-#include <naex/types.h>
 #include <cmath>
 #include <flann/flann.hpp>
 #include <limits>
+#include <naex/array.h>
+#include <naex/buffer.h>
+#include <naex/types.h>
 #include <vector>
 
 namespace naex {

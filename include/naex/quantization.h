@@ -29,8 +29,8 @@ template <typename F, typename I> F reconstruct(I value, F min, F max) {
   assert(min <= max);
   const auto lo = std::numeric_limits<I>::min();
   const auto hi = std::numeric_limits<I>::max();
-  return min + (static_cast<F>(value) - lo) / (static_cast<F>(hi) - lo) *
-                   (max - min);
+  return min +
+         (static_cast<F>(value) - lo) / (static_cast<F>(hi) - lo) * (max - min);
 }
 
 } // namespace naex

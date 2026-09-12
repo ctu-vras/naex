@@ -11,9 +11,9 @@
 
 #include "naex/grid/grid.h"
 #include "naex/types.h"
+#include <cmath>
 #include <geometry_msgs/msg/point.hpp>
 #include <geometry_msgs/msg/vector3.hpp>
-#include <cmath>
 #include <sstream>
 #include <string>
 
@@ -31,9 +31,7 @@ inline std::string format(const geometry_msgs::msg::Vector3 &v) {
 inline std::string format(const geometry_msgs::msg::Point &v) {
   return format(v.x, v.y, v.z);
 }
-inline std::string format(const Vec3 &v) {
-  return format(v.x(), v.y(), v.z());
-}
+inline std::string format(const Vec3 &v) { return format(v.x(), v.y(), v.z()); }
 
 inline Vec3 to_vec3(const geometry_msgs::msg::Point &p) {
   return Vec3(p.x, p.y, p.z);

@@ -17,15 +17,15 @@
 using naex::grid::Cell;
 using naex::grid::Cost;
 using naex::grid::Costs;
-using naex::grid::Grid;
 using naex::grid::Graph;
+using naex::grid::Grid;
 using naex::grid::Point2f;
 using naex::grid::ShortestPaths;
 using naex::grid::VertexId;
 
 namespace {
 constexpr Cost kNaN = std::numeric_limits<Cost>::quiet_NaN();
-}  // namespace
+} // namespace
 
 TEST(Grid, PointToCellRoundTrip) {
   const Grid grid(0.4f);
@@ -239,7 +239,7 @@ Grid make_dense_grid(int16_t n, float cell_size = 1.f) {
   return grid;
 }
 
-}  // namespace
+} // namespace
 
 TEST(AdHocLayer, FillLayerTouchesOnlyThatLayer) {
   Grid grid = make_dense_grid(3);
@@ -298,9 +298,9 @@ TEST(SidelobeDisc, ProductionSizedLobeHitsTwelveCells) {
     }
   }
   const std::set<std::pair<int, int>> expected = {
-      {-1, -1}, {-1, 0}, {0, -1}, {0, 0},    // |cx| = |cy| = 0.2
-      {-2, -1}, {-2, 0}, {1, -1}, {1, 0},    // |cx| = 0.6, |cy| = 0.2
-      {-1, -2}, {0, -2}, {-1, 1}, {0, 1}};   // |cx| = 0.2, |cy| = 0.6
+      {-1, -1}, {-1, 0}, {0, -1}, {0, 0},  // |cx| = |cy| = 0.2
+      {-2, -1}, {-2, 0}, {1, -1}, {1, 0},  // |cx| = 0.6, |cy| = 0.2
+      {-1, -2}, {0, -2}, {-1, 1}, {0, 1}}; // |cx| = 0.2, |cy| = 0.6
   EXPECT_EQ(affected.size(), 12u);
   EXPECT_EQ(affected, expected);
 }
@@ -316,8 +316,7 @@ void reference_apply_disc_cost(Grid &grid, int layer, const Point2f &center,
   if (!naex::grid::is_valid_layer(layer)) {
     return;
   }
-  const naex::grid::CellId n =
-      static_cast<naex::grid::CellId>(grid.size());
+  const naex::grid::CellId n = static_cast<naex::grid::CellId>(grid.size());
   for (naex::grid::CellId v = 0; v < n; ++v) {
     const Point2f p = grid.point(v);
     const float dx = p.x - center.x;
@@ -331,7 +330,7 @@ void reference_apply_disc_cost(Grid &grid, int layer, const Point2f &center,
   }
 }
 
-}  // namespace
+} // namespace
 
 TEST(SidelobeDisc, SparseGridOnlyTouchesExistingCells) {
   // 0.4 m cells covering [-2, 2) in both axes, with (0, 0) -- the cell the disc
@@ -359,9 +358,8 @@ TEST(SidelobeDisc, SparseGridOnlyTouchesExistingCells) {
   }
   // ProductionSizedLobeHitsTwelveCells' set minus the missing (0, 0).
   const std::set<std::pair<int, int>> expected = {
-      {-1, -1}, {-1, 0}, {0, -1},
-      {-2, -1}, {-2, 0}, {1, -1}, {1, 0},
-      {-1, -2}, {0, -2}, {-1, 1}, {0, 1}};
+      {-1, -1}, {-1, 0},  {0, -1}, {-2, -1}, {-2, 0}, {1, -1},
+      {1, 0},   {-1, -2}, {0, -2}, {-1, 1},  {0, 1}};
   EXPECT_EQ(affected, expected);
   EXPECT_EQ(dirty.size(), expected.size());
 }
@@ -470,9 +468,8 @@ TEST(SidelobeDisc, MatchesBruteForceOnRandomGrid) {
     naex::grid::apply_disc_cost(grid, 3, center, r, cost, &dirty);
     reference_apply_disc_cost(reference, 3, center, r, cost, &ref_dirty);
     ASSERT_EQ(grid.size(), size_before) << "no cell may be created";
-    ASSERT_EQ(dirty, ref_dirty)
-        << "trial " << trial << " centre (" << center.x << ", " << center.y
-        << ") radius " << r;
+    ASSERT_EQ(dirty, ref_dirty) << "trial " << trial << " centre (" << center.x
+                                << ", " << center.y << ") radius " << r;
     for (naex::grid::CellId v = 0; v < grid.size(); ++v) {
       ASSERT_FLOAT_EQ(grid.costs(v)[3], reference.costs(v)[3])
           << "trial " << trial << ", cell " << v;
@@ -549,11 +546,9 @@ TEST(Planning, NearestReachableCellWithUnreachableGoal) {
   const ShortestPaths sp(grid, start, 8, Costs(1.f));
   ASSERT_FALSE(std::isfinite(sp.path_cost(grid.cell_id(Cell(19, 0)))));
 
-  const naex::grid::CellId v1 =
-      naex::grid::nearest_cell(grid, Point2f(19.5f, 0.5f),
-                               [&sp](naex::grid::CellId v) {
-                                return std::isfinite(sp.path_cost(v));
-                               });
+  const naex::grid::CellId v1 = naex::grid::nearest_cell(
+      grid, Point2f(19.5f, 0.5f),
+      [&sp](naex::grid::CellId v) { return std::isfinite(sp.path_cost(v)); });
   ASSERT_NE(v1, naex::grid::INVALID_CELL_ID);
   EXPECT_EQ(grid.cell(v1).x, 9) << "nearest reachable cell to the goal";
   EXPECT_EQ(grid.cell(v1).y, 0);
@@ -591,16 +586,16 @@ size_t ingest_points(Grid &grid, const std::vector<Point2f> &points,
   return skipped;
 }
 
-}  // namespace
+} // namespace
 
 TEST(InputGuard, NonFinitePointsCreateNoCell) {
   // Casting NaN/Inf to int16_t is undefined behaviour and used to create a
   // phantom cell wherever the conversion happened to land (B8).
   const float kInf = std::numeric_limits<float>::infinity();
   Grid grid(0.4f, 1.f, Costs(0.f, 0.f, 0.f, 0.f));
-  const std::vector<Point2f> bad = {
-      Point2f(kNaN, 0.f),  Point2f(0.f, kNaN),  Point2f(kNaN, kNaN),
-      Point2f(kInf, 0.f),  Point2f(0.f, -kInf), Point2f(-kInf, kInf)};
+  const std::vector<Point2f> bad = {Point2f(kNaN, 0.f),  Point2f(0.f, kNaN),
+                                    Point2f(kNaN, kNaN), Point2f(kInf, 0.f),
+                                    Point2f(0.f, -kInf), Point2f(-kInf, kInf)};
   EXPECT_EQ(ingest_points(grid, bad, Point2f(0.f, 0.f), 0.f), bad.size());
   EXPECT_EQ(grid.size(), 0u);
   EXPECT_TRUE(grid.empty());
@@ -618,18 +613,17 @@ TEST(InputGuard, OutOfInt16RangePointsCreateNoCell) {
   EXPECT_FLOAT_EQ(limit, 32767.f * 0.4f);
 
   const std::vector<Point2f> outside = {
-      Point2f(limit, 0.f),         Point2f(-limit, 0.f),
-      Point2f(0.f, limit),         Point2f(0.f, -limit),
-      Point2f(2.f * limit, 0.f),   Point2f(0.f, -1e9f)};
+      Point2f(limit, 0.f),  Point2f(-limit, 0.f),      Point2f(0.f, limit),
+      Point2f(0.f, -limit), Point2f(2.f * limit, 0.f), Point2f(0.f, -1e9f)};
   EXPECT_EQ(ingest_points(grid, outside, Point2f(0.f, 0.f), 0.f),
             outside.size());
   EXPECT_EQ(grid.size(), 0u);
 
   // Just inside the limit is still accepted, and lands where it should.
   const float inside = std::nextafter(limit, 0.f);
-  EXPECT_EQ(ingest_points(grid, {Point2f(inside, -inside)}, Point2f(0.f, 0.f),
-                          0.f),
-            0u);
+  EXPECT_EQ(
+      ingest_points(grid, {Point2f(inside, -inside)}, Point2f(0.f, 0.f), 0.f),
+      0u);
   ASSERT_EQ(grid.size(), 1u);
   EXPECT_EQ(grid.cell(0).x, 32766);
   EXPECT_EQ(grid.cell(0).y, -32767);
@@ -812,8 +806,8 @@ TEST(Eviction, MapRangeZeroIsANoOp) {
   const uint64_t version_before = grid.version();
   EXPECT_FALSE(
       naex::grid::evict_outside_range(grid, Point2f(kNaN, 0.f), 5.f).changed());
-  EXPECT_FALSE(naex::grid::evict_outside_range(grid, Point2f(1e9f, 0.f), 5.f)
-                   .changed());
+  EXPECT_FALSE(
+      naex::grid::evict_outside_range(grid, Point2f(1e9f, 0.f), 5.f).changed());
   EXPECT_EQ(grid.size(), 400u);
   EXPECT_EQ(grid.version(), version_before);
 }
@@ -830,7 +824,7 @@ TEST(Eviction, MapRangeInMetresBoundsTheGrid) {
   ASSERT_EQ(grid.size(), 1600u);
   EXPECT_EQ(naex::grid::cell_radius(grid, 3.f), 8);
 
-  const Point2f robot(0.1f, 0.1f);  // cell (0, 0)
+  const Point2f robot(0.1f, 0.1f); // cell (0, 0)
   const naex::grid::Eviction ev =
       naex::grid::evict_outside_range(grid, robot, 3.f);
   EXPECT_EQ(ev.after, 17u * 17u);
@@ -986,14 +980,14 @@ Grid make_shuffled_grid(int16_t side, size_t count, unsigned seed) {
   return grid;
 }
 
-}  // namespace
+} // namespace
 
 TEST(Grid, NeighborTableAntipodal) {
   // The property the incremental back-link patch relies on.
   for (int i = 0; i < 8; ++i) {
     const Cell c(3, -5);
-    const Cell back = naex::grid::neighbor8(naex::grid::neighbor8(c, i),
-                                            (i + 4) % 8);
+    const Cell back =
+        naex::grid::neighbor8(naex::grid::neighbor8(c, i), (i + 4) % 8);
     EXPECT_EQ(back.x, c.x) << "index " << i;
     EXPECT_EQ(back.y, c.y) << "index " << i;
   }
@@ -1189,7 +1183,7 @@ inline std::pair<EdgeIter, EdgeIter> out_edges(VertexId u, const RefGraph &g) {
 }
 inline Cost get(const RefEdgeCosts &map, const EdgeId &key) { return map[key]; }
 
-}  // namespace ref
+} // namespace ref
 
 namespace boost {
 template <> struct graph_traits<ref::RefGraph> {
@@ -1210,7 +1204,7 @@ public:
   typedef naex::grid::Cost reference;
   typedef readable_property_map_tag category;
 };
-}  // namespace boost
+} // namespace boost
 
 namespace ref {
 
@@ -1233,7 +1227,7 @@ struct RefShortestPaths {
   std::vector<Cost> path_costs;
 };
 
-}  // namespace ref
+} // namespace ref
 
 TEST(ShortestPaths, MatchesThePreP2HashGraphOnRandomGrids) {
   // 20 random sparse grids with random costs, searched from a random start
@@ -1245,7 +1239,7 @@ TEST(ShortestPaths, MatchesThePreP2HashGraphOnRandomGrids) {
     for (int16_t x = 0; x < 16; ++x) {
       for (int16_t y = 0; y < 16; ++y) {
         if (rng() % 4 == 0) {
-          continue;  // hole: no cell at all
+          continue; // hole: no cell at all
         }
         const naex::grid::CellId v = grid.cell_id(Cell(x, y));
         grid.costs(v)[0] = 0.25f * static_cast<float>(rng() % 9);
@@ -1371,7 +1365,7 @@ TEST(Grid, ReserveDoesNotChangeContent) {
   }();
   grid.reserve(100000);
   EXPECT_EQ(grid.size(), n);
-  grid.reserve(1);  // smaller: ignored
+  grid.reserve(1); // smaller: ignored
   EXPECT_EQ(grid.size(), n);
   for (naex::grid::CellId i = 0; i < n; ++i) {
     for (int k = 0; k < 8; ++k) {

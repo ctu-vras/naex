@@ -19,8 +19,10 @@ public:
     check_model_ = declare_parameter<bool>("check_model", check_model_);
     cloud_sub_ = create_subscription<sensor_msgs::msg::PointCloud2>(
         "cloud", 2,
-        [this](const std::shared_ptr<const sensor_msgs::msg::PointCloud2>
-                   &msg) { this->cloud_received(msg); });
+        [this](
+            const std::shared_ptr<const sensor_msgs::msg::PointCloud2> &msg) {
+          this->cloud_received(msg);
+        });
     RCLCPP_INFO(get_logger(), "Node initialized.");
   }
 
@@ -39,8 +41,7 @@ public:
                 "elevation [%.3g, %.3g], step %.3g, "
                 "azimuth [%.3g, %.3g], step %.3g [deg] "
                 "(%.3f s).",
-                model_.height_, model_.width_,
-                degrees(model_.elevation_start_),
+                model_.height_, model_.width_, degrees(model_.elevation_start_),
                 degrees(model_.elevation_start_ +
                         (model_.height_ - 1) * model_.elevation_step_),
                 degrees(model_.elevation_step_), degrees(model_.azimuth_start_),

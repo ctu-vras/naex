@@ -13,8 +13,11 @@
 #include "naex/grid/grid.h"
 #include "naex/grid/search.h"
 #include "naex/types.h"
+#include <cstddef>
 #include <geometry_msgs/msg/point.hpp>
 #include <geometry_msgs/msg/pose_stamped.hpp>
+#include <limits>
+#include <memory>
 #include <nav_msgs/msg/occupancy_grid.hpp>
 #include <nav_msgs/msg/path.hpp>
 #include <nav_msgs/srv/get_plan.hpp>
@@ -22,15 +25,12 @@
 #include <sensor_msgs/msg/point_cloud2.hpp>
 #include <std_msgs/msg/float32.hpp>
 #include <std_srvs/srv/trigger.hpp>
+#include <string>
 #include <tf2_ros/buffer.hpp>
 #include <tf2_ros/transform_listener.hpp>
-#include <visualization_msgs/msg/marker_array.hpp>
-#include <cstddef>
-#include <limits>
-#include <memory>
-#include <string>
 #include <utility>
 #include <vector>
+#include <visualization_msgs/msg/marker_array.hpp>
 
 namespace naex {
 namespace grid {
@@ -232,9 +232,8 @@ public:
   void fill_map_occupancy_grid(nav_msgs::msg::OccupancyGrid &occ_grid);
 
   /// Index of @p p in @p occ_grid, or -1 when it falls outside.
-  int
-  point_to_occupancy_grid_cell(const Point2f &p,
-                               const nav_msgs::msg::OccupancyGrid &occ_grid);
+  int point_to_occupancy_grid_cell(
+      const Point2f &p, const nav_msgs::msg::OccupancyGrid &occ_grid);
 
   /// Bottom-left corner of an occupancy grid centred on @p robot_pose.
   geometry_msgs::msg::Point

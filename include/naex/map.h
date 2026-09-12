@@ -3,12 +3,6 @@
 //
 // The templates and the hot graph accessors stay in the header; the remaining
 // Map member functions are defined under src/map/ (library naex_core).
-#include <naex/flann.h>
-#include <naex/geom.h>
-#include <naex/iterators.h>
-#include <naex/nearest_neighbors.h>
-#include <naex/timer.h>
-#include <naex/types.h>
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
@@ -17,6 +11,12 @@
 #include <limits>
 #include <memory>
 #include <mutex>
+#include <naex/flann.h>
+#include <naex/geom.h>
+#include <naex/iterators.h>
+#include <naex/nearest_neighbors.h>
+#include <naex/timer.h>
+#include <naex/types.h>
 #include <rclcpp/clock.hpp>
 #include <rclcpp/logger.hpp>
 #include <rclcpp/logging.hpp>
@@ -103,14 +103,12 @@ public:
 
     flann::Matrix<Value> positions(dirty_cloud[0].position_, dirty_cloud.size(),
                                    3, sizeof(Neighborhood));
-    flann::Matrix<Index> neighbors(dirty_cloud[0].neighbors_,
-                                   dirty_cloud.size(),
-                                   Neighborhood::K_NEIGHBORS,
-                                   sizeof(Neighborhood));
-    flann::Matrix<Value> distances(dirty_cloud[0].distances_,
-                                   dirty_cloud.size(),
-                                   Neighborhood::K_NEIGHBORS,
-                                   sizeof(Neighborhood));
+    flann::Matrix<Index> neighbors(
+        dirty_cloud[0].neighbors_, dirty_cloud.size(),
+        Neighborhood::K_NEIGHBORS, sizeof(Neighborhood));
+    flann::Matrix<Value> distances(
+        dirty_cloud[0].distances_, dirty_cloud.size(),
+        Neighborhood::K_NEIGHBORS, sizeof(Neighborhood));
 
     t.reset();
     flann::SearchParams params;
@@ -140,7 +138,8 @@ public:
                 std::numeric_limits<Value>::quiet_NaN());
     }
 
-    RCLCPP_DEBUG(map_logger(), "Neighborhood updated at %lu / %lu pts (%.3f s).",
+    RCLCPP_DEBUG(map_logger(),
+                 "Neighborhood updated at %lu / %lu pts (%.3f s).",
                  dirty_cloud.size(), cloud_.size(), t.seconds_elapsed());
   }
 
@@ -255,8 +254,8 @@ public:
         cloud_[v0].flags_ &= ~EDGE;
       }
     }
-    RCLCPP_DEBUG(map_logger(), "%lu / %lu edge points (%.4f s).", size_t(n_edge),
-                 size_t(n), t.seconds_elapsed());
+    RCLCPP_DEBUG(map_logger(), "%lu / %lu edge points (%.4f s).",
+                 size_t(n_edge), size_t(n), t.seconds_elapsed());
   }
 
   template <typename It> void compute_labels(It begin, It end) {
@@ -385,9 +384,9 @@ public:
   std::vector<Index> nearby_indices(Value *origin, Value radius);
 
   /// Update occupancy from an organized cloud using its own neighborhood.
-  void
-  update_occupancy_organized(const sensor_msgs::msg::PointCloud2 &cloud,
-                             const geometry_msgs::msg::Transform &cloud_to_map_tf);
+  void update_occupancy_organized(
+      const sensor_msgs::msg::PointCloud2 &cloud,
+      const geometry_msgs::msg::Transform &cloud_to_map_tf);
 
   /// Update occupancy from an organized cloud using a fitted sensor model.
   void update_occupancy_projection(

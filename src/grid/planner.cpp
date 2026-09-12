@@ -5,21 +5,21 @@
 #include "naex/grid/path.h"
 #include "naex/timer.h"
 #include "naex/transforms.h"
+#include <algorithm>
+#include <chrono>
+#include <cmath>
 #include <geometry_msgs/msg/transform_stamped.hpp>
+#include <limits>
+#include <memory>
+#include <numeric>
 #include <sensor_msgs/point_cloud2_iterator.hpp>
+#include <sstream>
+#include <stdexcept>
+#include <string>
 #include <tf2/exceptions.hpp>
 #include <tf2/time.hpp>
 #include <tf2_eigen/tf2_eigen.hpp>
 #include <tf2_geometry_msgs/tf2_geometry_msgs.hpp>
-#include <algorithm>
-#include <chrono>
-#include <cmath>
-#include <limits>
-#include <memory>
-#include <numeric>
-#include <sstream>
-#include <stdexcept>
-#include <string>
 #include <utility>
 #include <vector>
 
@@ -66,7 +66,7 @@ constexpr double kFrontierMarkerColorG = 224.0;
 constexpr double kFrontierMarkerColorB = 208.0;
 constexpr double kFrontierMarkerAlpha = 1.0;
 
-}  // namespace
+} // namespace
 
 Planner::Planner(rclcpp::Node::SharedPtr nh) : nh_(nh) {
   // Invalid position invokes exploration mode.
@@ -87,14 +87,14 @@ Planner::Planner(rclcpp::Node::SharedPtr nh) : nh_(nh) {
 
   position_field_ =
       nh_->declare_parameter<std::string>("position_field", position_field_);
-  cost_fields_ = nh_->declare_parameter<std::vector<std::string>>(
-      "cost_fields", cost_fields_);
+  cost_fields_ = nh_->declare_parameter<std::vector<std::string>>("cost_fields",
+                                                                  cost_fields_);
   which_cloud_ = nh_->declare_parameter<std::vector<long int>>("which_cloud",
                                                                which_cloud_);
-  cloud_weights_ = nh_->declare_parameter<std::vector<double>>(
-      "cloud_weights", cloud_weights_);
-  cloud_levels_ = nh_->declare_parameter<std::vector<long int>>(
-      "cloud_levels", cloud_levels_);
+  cloud_weights_ = nh_->declare_parameter<std::vector<double>>("cloud_weights",
+                                                               cloud_weights_);
+  cloud_levels_ = nh_->declare_parameter<std::vector<long int>>("cloud_levels",
+                                                                cloud_levels_);
   map_frame_ = nh_->declare_parameter<std::string>("map_frame", map_frame_);
   robot_frame_ =
       nh_->declare_parameter<std::string>("robot_frame", robot_frame_);
@@ -131,8 +131,7 @@ Planner::Planner(rclcpp::Node::SharedPtr nh) : nh_(nh) {
   // P6b: bound of the grid itself; 0 (the default) keeps the pre-P6
   // behaviour, i.e. an unbounded map that only ever grows.
   map_range_ = nh_->declare_parameter<float>("map_range", map_range_);
-  evict_period_ =
-      nh_->declare_parameter<float>("evict_period", evict_period_);
+  evict_period_ = nh_->declare_parameter<float>("evict_period", evict_period_);
 
   float cell_size = nh_->declare_parameter<float>("cell_size", 1.0f);
   float forget_factor = nh_->declare_parameter<float>("forget_factor", 1.0f);
@@ -190,10 +189,9 @@ Planner::Planner(rclcpp::Node::SharedPtr nh) : nh_(nh) {
   stop_on_goal_ = nh_->declare_parameter<bool>("stop_on_goal", stop_on_goal_);
   goal_reached_dist_ =
       nh_->declare_parameter<float>("goal_reached_dist", goal_reached_dist_);
-  mode_ = to_planning_mode(
-      nh_->declare_parameter<int>("mode",
-                                  static_cast<int>(kDefaultPlanningMode)),
-      nh_->get_logger());
+  mode_ = to_planning_mode(nh_->declare_parameter<int>(
+                               "mode", static_cast<int>(kDefaultPlanningMode)),
+                           nh_->get_logger());
   max_start_to_traversable_dist_ = nh_->declare_parameter<float>(
       "max_start_to_traversable_dist", max_start_to_traversable_dist_);
 
@@ -243,23 +241,21 @@ Planner::Planner(rclcpp::Node::SharedPtr nh) : nh_(nh) {
   // Sidelobes strategy parameters
   sidelobes_offset_distance_ = nh_->declare_parameter(
       "sidelobes_offset_distance", sidelobes_offset_distance_);
-  sidelobes_radius_ = nh_->declare_parameter(
-      "sidelobes_radius", sidelobes_radius_);
-  sidelobes_cost_ = nh_->declare_parameter(
-      "sidelobes_cost", sidelobes_cost_);
-  sidelobes_angle_offsets_ = nh_->declare_parameter(
-      "sidelobes_angle_offsets", sidelobes_angle_offsets_);
+  sidelobes_radius_ =
+      nh_->declare_parameter("sidelobes_radius", sidelobes_radius_);
+  sidelobes_cost_ = nh_->declare_parameter("sidelobes_cost", sidelobes_cost_);
+  sidelobes_angle_offsets_ = nh_->declare_parameter("sidelobes_angle_offsets",
+                                                    sidelobes_angle_offsets_);
 
   tf_ = std::make_shared<tf2_ros::Buffer>(nh_->get_clock());
   tf_sub_ = std::make_shared<tf2_ros::TransformListener>(*tf_);
 
   map_pub_ = nh_->create_publisher<sensor_msgs::msg::PointCloud2>(
       "map", kPublisherQueueDepth);
-  path_pub_ = nh_->create_publisher<nav_msgs::msg::Path>(
-      "path", kPublisherQueueDepth);
-  planning_freq_pub_ =
-      nh_->create_publisher<std_msgs::msg::Float32>("planning_freq",
-                                                     kPublisherQueueDepth);
+  path_pub_ =
+      nh_->create_publisher<nav_msgs::msg::Path>("path", kPublisherQueueDepth);
+  planning_freq_pub_ = nh_->create_publisher<std_msgs::msg::Float32>(
+      "planning_freq", kPublisherQueueDepth);
   occ_grid_pub_ = nh_->create_publisher<nav_msgs::msg::OccupancyGrid>(
       "map_occupancy_grid", rclcpp::SystemDefaultsQoS());
   // Debug only.
@@ -285,8 +281,8 @@ Planner::Planner(rclcpp::Node::SharedPtr nh) : nh_(nh) {
   // publisher without rebuilding (B10).
   const rclcpp::QoS input_qos =
       sensor_data_qos_
-          ? rclcpp::QoS(rclcpp::SensorDataQoS(rclcpp::KeepLast(
-                static_cast<size_t>(queue_size))))
+          ? rclcpp::QoS(rclcpp::SensorDataQoS(
+                rclcpp::KeepLast(static_cast<size_t>(queue_size))))
           : rclcpp::QoS(rclcpp::KeepLast(static_cast<size_t>(queue_size)));
   RCLCPP_INFO(nh_->get_logger(), "Input cloud QoS: %s, depth %d.",
               sensor_data_qos_ ? "sensor data (best effort)" : "reliable",
@@ -297,9 +293,8 @@ Planner::Planner(rclcpp::Node::SharedPtr nh) : nh_(nh) {
     input_cloud_subs_.push_back(
         nh_->create_subscription<sensor_msgs::msg::PointCloud2>(
             ss.str(), input_qos,
-            [this,
-             i](const std::shared_ptr<const sensor_msgs::msg::PointCloud2>
-                    &msg) { this->receive_cloud_safe(msg, i); }));
+            [this, i](const std::shared_ptr<const sensor_msgs::msg::PointCloud2>
+                          &msg) { this->receive_cloud_safe(msg, i); }));
   }
 
   if (planning_freq_ > 0.f) {
@@ -324,9 +319,8 @@ Planner::Planner(rclcpp::Node::SharedPtr nh) : nh_(nh) {
   }
 
   get_plan_service_ = nh_->create_service<nav_msgs::srv::GetPlan>(
-      "get_plan",
-      [this](const nav_msgs::srv::GetPlan::Request::SharedPtr req,
-             nav_msgs::srv::GetPlan::Response::SharedPtr res) {
+      "get_plan", [this](const nav_msgs::srv::GetPlan::Request::SharedPtr req,
+                         nav_msgs::srv::GetPlan::Response::SharedPtr res) {
         this->request_plan(req, res);
       });
   clear_map_service_ = nh_->create_service<std_srvs::srv::Trigger>(
@@ -346,8 +340,7 @@ Planner::Planner(rclcpp::Node::SharedPtr nh) : nh_(nh) {
   // what was configured); only the crop actually applied is clamped, and the
   // warning below is emitted once, at start-up.
   effective_input_range_ = input_range_;
-  if (map_range_ > 0.f &&
-      !(input_range_ > 0.f && input_range_ <= map_range_)) {
+  if (map_range_ > 0.f && !(input_range_ > 0.f && input_range_ <= map_range_)) {
     effective_input_range_ = map_range_;
     RCLCPP_WARN(nh_->get_logger(),
                 "input_range (%.1f) exceeds map_range (%.1f) or is disabled: "
@@ -462,7 +455,7 @@ VertexId Planner::get_cheapest_frontier(const ShortestPaths &sp,
   // 1. Collect the frontier cells into a grid of their own.
   //    "traversable" == expanded by the search AND at least min_dist away.
   Grid frontiers_grid(grid_.cell_size(), 1.f, default_costs_);
-  std::vector<Cost> frontier_costs;   // indexed by frontiers_grid cell id
+  std::vector<Cost> frontier_costs;      // indexed by frontiers_grid cell id
   std::vector<std::uint8_t> traversable; // same index
 
   for (VertexId v = 0; v < n; ++v) {
@@ -472,8 +465,7 @@ VertexId Planner::get_cheapest_frontier(const ShortestPaths &sp,
       return within_range(grid_, t, v_start, astar_max_range_);
     });
     if (degree <= max_neighbors) {
-      frontiers_grid.create_cell(
-          frontiers_grid.point_to_cell(grid_.point(v)));
+      frontiers_grid.create_cell(frontiers_grid.point_to_cell(grid_.point(v)));
       frontier_costs.push_back(sp.f_value(v));
       traversable.push_back(is_traversable ? 1 : 0);
     }
@@ -540,8 +532,8 @@ VertexId Planner::get_cheapest_frontier(const ShortestPaths &sp,
       continue;
     }
     if (frontier_costs[fv] < cheapest_cost) {
-      const CellId v = grid_.find_cell(
-          grid_.point_to_cell(frontiers_grid.point(fv)));
+      const CellId v =
+          grid_.find_cell(grid_.point_to_cell(frontiers_grid.point(fv)));
       if (v == INVALID_CELL_ID) {
         continue;
       }
@@ -657,8 +649,9 @@ VertexId Planner::select_start_vertex(const Vec3 &p0, bool &straight_line) {
 }
 
 VertexId Planner::select_astar_goal_vertex(const ShortestPaths &sp, VertexId v0,
-                             VertexId v_goal, bool is_goal_explored,
-                             const Vec3 &p0, const Vec3 &p1) {
+                                           VertexId v_goal,
+                                           bool is_goal_explored,
+                                           const Vec3 &p0, const Vec3 &p1) {
   VertexId v1 = INVALID_VERTEX_ID;
   bool consider_frontier = false;
   const Value euclidean_dist_to_goal = (to_vec3(grid_.point(v0)) - p1).norm();
@@ -738,7 +731,7 @@ VertexId Planner::select_astar_goal_vertex(const ShortestPaths &sp, VertexId v0,
 }
 
 bool Planner::plan(nav_msgs::srv::GetPlan::Request::SharedPtr req,
-        nav_msgs::srv::GetPlan::Response::SharedPtr res) {
+                   nav_msgs::srv::GetPlan::Response::SharedPtr res) {
   Timer t;
   Timer t_part;
   RCLCPP_INFO(nh_->get_logger(),
@@ -877,9 +870,8 @@ bool Planner::plan(nav_msgs::srv::GetPlan::Request::SharedPtr req,
     } else {
       // Extract robot yaw from start pose orientation.
       const auto &q = start.pose.orientation;
-      const float robot_yaw =
-          std::atan2(2.0f * (q.w * q.z + q.x * q.y),
-                     1.0f - 2.0f * (q.y * q.y + q.z * q.z));
+      const float robot_yaw = std::atan2(2.0f * (q.w * q.z + q.x * q.y),
+                                         1.0f - 2.0f * (q.y * q.y + q.z * q.z));
       apply_ad_hoc_costs(p0, robot_yaw);
       RCLCPP_DEBUG(nh_->get_logger(),
                    "Applied ad-hoc costs at robot position %s, yaw %.3f rad.",
@@ -951,8 +943,8 @@ bool Planner::plan(nav_msgs::srv::GetPlan::Request::SharedPtr req,
 
   RCLCPP_DEBUG(nh_->get_logger(), "v0 %u x %f y %f start", v0,
                grid_.point(v0).x, grid_.point(v0).y);
-  RCLCPP_DEBUG(nh_->get_logger(), "v1 %u x %f y %f goal", v1,
-               grid_.point(v1).x, grid_.point(v1).y);
+  RCLCPP_DEBUG(nh_->get_logger(), "v1 %u x %f y %f goal", v1, grid_.point(v1).x,
+               grid_.point(v1).y);
 
   const auto path_vertices = trace_path_vertices(v0, v1, sp.predecessors());
   nav_msgs::msg::Path local_plan;
@@ -967,8 +959,7 @@ bool Planner::plan(nav_msgs::srv::GetPlan::Request::SharedPtr req,
 
   RCLCPP_INFO(nh_->get_logger(),
               "Path with %lu poses toward goal %s planned (%.3f s).",
-              res->plan.poses.size(), format(p1).c_str(),
-              t.seconds_elapsed());
+              res->plan.poses.size(), format(p1).c_str(), t.seconds_elapsed());
   return true;
 }
 
@@ -1014,9 +1005,9 @@ void Planner::create_and_publish_map_cloud(const ShortestPaths &sp) {
 }
 
 void Planner::fill_map_occupancy_grid(nav_msgs::msg::OccupancyGrid &occ_grid) {
-  occ_grid.data.assign(
-      static_cast<size_t>(occ_grid.info.width) * occ_grid.info.height,
-      kOccupancyUnknown);
+  occ_grid.data.assign(static_cast<size_t>(occ_grid.info.width) *
+                           occ_grid.info.height,
+                       kOccupancyUnknown);
   const VertexId n = static_cast<VertexId>(grid_.size());
   for (VertexId v = 0; v < n; ++v) {
     const int data_idx = point_to_occupancy_grid_cell(grid_.point(v), occ_grid);
@@ -1030,8 +1021,8 @@ void Planner::fill_map_occupancy_grid(nav_msgs::msg::OccupancyGrid &occ_grid) {
   }
 }
 
-int Planner::point_to_occupancy_grid_cell(const Point2f &p,
-                           const nav_msgs::msg::OccupancyGrid &occ_grid) {
+int Planner::point_to_occupancy_grid_cell(
+    const Point2f &p, const nav_msgs::msg::OccupancyGrid &occ_grid) {
   const double dx = p.x - occ_grid.info.origin.position.x;
   const double dy = p.y - occ_grid.info.origin.position.y;
   const int64_t cell_x =
@@ -1048,16 +1039,14 @@ int Planner::point_to_occupancy_grid_cell(const Point2f &p,
                           static_cast<int64_t>(occ_grid.info.width) * cell_y);
 }
 
-geometry_msgs::msg::Point
-Planner::get_occupancy_grid_origin(const geometry_msgs::msg::Pose &robot_pose,
-                     const nav_msgs::msg::OccupancyGrid &occ_grid) {
+geometry_msgs::msg::Point Planner::get_occupancy_grid_origin(
+    const geometry_msgs::msg::Pose &robot_pose,
+    const nav_msgs::msg::OccupancyGrid &occ_grid) {
   geometry_msgs::msg::Point origin;
-  origin.x = robot_pose.position.x -
-             static_cast<double>(occ_grid.info.width) / 2. *
-                 occ_grid.info.resolution;
-  origin.y = robot_pose.position.y -
-             static_cast<double>(occ_grid.info.height) / 2. *
-                 occ_grid.info.resolution;
+  origin.x = robot_pose.position.x - static_cast<double>(occ_grid.info.width) /
+                                         2. * occ_grid.info.resolution;
+  origin.y = robot_pose.position.y - static_cast<double>(occ_grid.info.height) /
+                                         2. * occ_grid.info.resolution;
   return origin;
 }
 
@@ -1070,8 +1059,7 @@ void Planner::create_and_publish_map_occupancy_grid(
   occ_grid->info.map_load_time = now;
   occ_grid->info.resolution = grid_.cell_size();
   occ_grid->info.width = static_cast<uint32_t>(std::max(0, occupancy_grid_w_));
-  occ_grid->info.height =
-      static_cast<uint32_t>(std::max(0, occupancy_grid_h_));
+  occ_grid->info.height = static_cast<uint32_t>(std::max(0, occupancy_grid_h_));
   // Assume the start pose of the request is the robot's current pose.
   occ_grid->info.origin.position = get_occupancy_grid_origin(start, *occ_grid);
   occ_grid->info.origin.orientation.w = 1.0;
@@ -1093,7 +1081,7 @@ void Planner::log_plan_summary() const {
 }
 
 bool Planner::plan_safe(nav_msgs::srv::GetPlan::Request::SharedPtr req,
-            nav_msgs::srv::GetPlan::Response::SharedPtr res) {
+                        nav_msgs::srv::GetPlan::Response::SharedPtr res) {
   // Reset here rather than in plan() so that every exit path of plan(),
   // including the tf2 exception below, still produces a summary line.
   plan_timings_ = PlanTimings();
@@ -1112,20 +1100,19 @@ bool Planner::plan_safe(nav_msgs::srv::GetPlan::Request::SharedPtr req,
 }
 
 void Planner::request_plan(nav_msgs::srv::GetPlan::Request::SharedPtr req,
-               nav_msgs::srv::GetPlan::Response::SharedPtr res) {
+                           nav_msgs::srv::GetPlan::Response::SharedPtr res) {
   RCLCPP_INFO(nh_->get_logger(), "Planning request received.");
   if (start_on_request_) {
     start_planning();
   }
   if (!plan_safe(req, res)) {
-    RCLCPP_WARN(nh_->get_logger(),
-                "Planning failed; returning an empty plan.");
+    RCLCPP_WARN(nh_->get_logger(), "Planning failed; returning an empty plan.");
     res->plan = empty_path();
   }
 }
 
 void Planner::clear_map(std_srvs::srv::Trigger::Request::SharedPtr,
-            std_srvs::srv::Trigger::Response::SharedPtr res) {
+                        std_srvs::srv::Trigger::Response::SharedPtr res) {
   const size_t cells = grid_.size();
   grid_.clear();
   // Every CellId is invalidated, so the ad-hoc dirty list cannot be replayed.
@@ -1152,8 +1139,7 @@ void Planner::clear_ad_hoc_layer() {
 }
 
 void Planner::apply_sidelobes_costs(const Vec3 &robot_pos, float robot_yaw) {
-  if (adhoc_layer_ < 0 ||
-      static_cast<size_t>(adhoc_layer_) >= Costs::kSize) {
+  if (adhoc_layer_ < 0 || static_cast<size_t>(adhoc_layer_) >= Costs::kSize) {
     return;
   }
 
@@ -1191,13 +1177,13 @@ void Planner::planning_timer() {
   path_pub_->publish(std::move(path));
   RCLCPP_INFO(nh_->get_logger(),
               "Planning robot %s path (%lu poses) in map %s: %.3f s.",
-              robot_frame_.c_str(), num_poses,
-              map_frame_.c_str(), t.seconds_elapsed());
+              robot_frame_.c_str(), num_poses, map_frame_.c_str(),
+              t.seconds_elapsed());
 }
 
 void Planner::receive_cloud(
-  const std::shared_ptr<const sensor_msgs::msg::PointCloud2> &input,
-  int cloud_index) {
+    const std::shared_ptr<const sensor_msgs::msg::PointCloud2> &input,
+    int cloud_index) {
   const auto age = (nh_->get_clock()->now() - input->header.stamp).seconds();
   if (age > max_cloud_age_) {
     RCLCPP_INFO(nh_->get_logger(),
@@ -1315,9 +1301,9 @@ void Planner::receive_cloud(
     // latest available transform (B11) rather than blocking the only
     // executor thread for a request-path timeout.
     geometry_msgs::msg::PoseStamped robot_pose;
-    const auto robot_to_map = tf_->lookupTransform(
-        map_frame_, robot_frame_, tf2::TimePointZero,
-        tf2::durationFromSec(cloud_tf_timeout_));
+    const auto robot_to_map =
+        tf_->lookupTransform(map_frame_, robot_frame_, tf2::TimePointZero,
+                             tf2::durationFromSec(cloud_tf_timeout_));
     transform_to_pose(robot_to_map, robot_pose);
     create_and_publish_map_occupancy_grid(robot_pose.pose);
   }
@@ -1338,10 +1324,9 @@ bool Planner::maybe_evict_cells(const Point2f &robot) {
   const double now = nh_->get_clock()->now().seconds();
   const float dx = robot.x - last_evict_at_.x;
   const float dy = robot.y - last_evict_at_.y;
-  const bool moved = !std::isfinite(last_evict_at_.x) ||
-                     !std::isfinite(last_evict_at_.y) ||
-                     std::sqrt(dx * dx + dy * dy) >=
-                         kEvictMoveFraction * map_range_;
+  const bool moved =
+      !std::isfinite(last_evict_at_.x) || !std::isfinite(last_evict_at_.y) ||
+      std::sqrt(dx * dx + dy * dy) >= kEvictMoveFraction * map_range_;
   // Not (now - last < period), so that a clock jump backwards evicts rather
   // than blocks eviction forever.
   const bool due = !(now - last_evict_time_ < evict_period_);
@@ -1358,21 +1343,20 @@ bool Planner::maybe_evict_cells(const Point2f &robot) {
   last_evict_at_ = robot;
   last_evict_time_ = now;
   if (ev.changed()) {
-    RCLCPP_INFO_THROTTLE(nh_->get_logger(), *nh_->get_clock(),
-                         kPerfLogThrottleMs,
-                         "perf evict: map_range=%.1f center=(%.1f, %.1f) "
-                         "cells_before=%lu cells_after=%lu removed=%lu",
-                         map_range_, robot.x, robot.y,
-                         static_cast<unsigned long>(ev.before),
-                         static_cast<unsigned long>(ev.after),
-                         static_cast<unsigned long>(ev.removed));
+    RCLCPP_INFO_THROTTLE(
+        nh_->get_logger(), *nh_->get_clock(), kPerfLogThrottleMs,
+        "perf evict: map_range=%.1f center=(%.1f, %.1f) "
+        "cells_before=%lu cells_after=%lu removed=%lu",
+        map_range_, robot.x, robot.y, static_cast<unsigned long>(ev.before),
+        static_cast<unsigned long>(ev.after),
+        static_cast<unsigned long>(ev.removed));
   }
   return true;
 }
 
 void Planner::receive_cloud_safe(
-  const std::shared_ptr<const sensor_msgs::msg::PointCloud2> &input,
-  int cloud_index) {
+    const std::shared_ptr<const sensor_msgs::msg::PointCloud2> &input,
+    int cloud_index) {
   try {
     receive_cloud(input, cloud_index);
   } catch (const tf2::TransformException &ex) {
@@ -1398,8 +1382,7 @@ void Planner::receive_cloud_safe(
 void Planner::update_max_costs_absolute(bool log) {
   max_costs_absolute_ = max_costs_;
   for (size_t i = 0; i < Costs::kSize; ++i) {
-    if (!std::isfinite(max_costs_relative_[i]) ||
-        i >= cloud_weights_.size()) {
+    if (!std::isfinite(max_costs_relative_[i]) || i >= cloud_weights_.size()) {
       continue;
     }
     const float old_value = max_costs_absolute_[i];

@@ -1,12 +1,12 @@
 #pragma once
 
+#include <cmath>
+#include <cstddef>
 #include <naex/clouds.h>
 #include <naex/filter.h>
 #include <naex/geom.h>
 #include <naex/timer.h>
 #include <naex/types.h>
-#include <cmath>
-#include <cstddef>
 #include <rclcpp/rclcpp.hpp>
 #include <sensor_msgs/msg/point_cloud2.hpp>
 #include <sensor_msgs/point_cloud2_iterator.hpp>
@@ -18,7 +18,8 @@ namespace naex {
 // Templated point field filters.
 
 template <typename T>
-class PointCloud2FilterFieldBase : public Filter<sensor_msgs::msg::PointCloud2> {
+class PointCloud2FilterFieldBase
+    : public Filter<sensor_msgs::msg::PointCloud2> {
 public:
   typedef PointCloud2FilterFieldBase<T> Same;
   typedef std::shared_ptr<Same> Ptr;
@@ -66,9 +67,8 @@ public:
   PointCloud2FilterFieldChain(const std::string &field, const Filters &filters)
       : PointCloud2FilterFieldBase<T>(field),
         FilterChain<sensor_msgs::msg::PointCloud2>(
-            FilterChain<sensor_msgs::msg::PointCloud2>::Filters(filters.begin(),
-                                                                filters.end())) {
-  }
+            FilterChain<sensor_msgs::msg::PointCloud2>::Filters(
+                filters.begin(), filters.end())) {}
   virtual ~PointCloud2FilterFieldChain() = default;
 
   void filter(const sensor_msgs::msg::PointCloud2 &input,

@@ -63,8 +63,8 @@ bool SphericalProjection::check(const sensor_msgs::msg::PointCloud2 &cloud) {
                   "Model direction [%.3f, %.3f, %.3f] "
                   "inconsistent with data [%.3f, %.3f, %.3f], "
                   "residual %.3f [deg].",
-                  pt_model(0), pt_model(1), pt_model(2), pt.x(), pt.y(),
-                  pt.z(), residual);
+                  pt_model(0), pt_model(1), pt_model(2), pt.x(), pt.y(), pt.z(),
+                  residual);
     }
   }
   double mean_residual = residual_sum / n;
@@ -250,8 +250,7 @@ bool SphericalProjection::fit_robust(
                degrees(azimuth_step_), az_models.size(),
                degrees(elevation_start_),
                degrees(elevation_start_ + (height_ - 1) * elevation_step_),
-               degrees(elevation_step_), el_models.size(),
-               t.seconds_elapsed());
+               degrees(elevation_step_), el_models.size(), t.seconds_elapsed());
 
   return true;
 }

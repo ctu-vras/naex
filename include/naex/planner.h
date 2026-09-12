@@ -1,14 +1,14 @@
 #pragma once
 
-#include <naex/buffer.h>
-#include <naex/graph.h>
-#include <naex/map.h>
-#include <naex/types.h>
 #include <flann/flann.hpp>
 #include <geometry_msgs/msg/pose_stamped.hpp>
 #include <limits>
 #include <memory>
 #include <mutex>
+#include <naex/buffer.h>
+#include <naex/graph.h>
+#include <naex/map.h>
+#include <naex/types.h>
 #include <nav_msgs/msg/path.hpp>
 #include <nav_msgs/srv/get_plan.hpp>
 #include <rclcpp/rclcpp.hpp>
@@ -62,15 +62,15 @@ public:
                           std::vector<Vertex> &path_indices);
 
   void append_path(const std::vector<Vertex> &path_indices,
-                   const std::vector<Point> &points,
-                   nav_msgs::msg::Path &path);
+                   const std::vector<Point> &points, nav_msgs::msg::Path &path);
 
   Buffer<Elem> viewpoint_dist(const flann::Matrix<Elem> &points);
   Buffer<Elem> other_viewpoint_dist(const flann::Matrix<Elem> &points);
 
   void input_map_received(const sensor_msgs::msg::PointCloud2 &cloud);
 
-  template <typename T> static bool valid_point(const T x, const T y, const T z) {
+  template <typename T>
+  static bool valid_point(const T x, const T y, const T z) {
     return std::isfinite(x) && std::isfinite(y) && std::isfinite(z);
   }
 
@@ -104,8 +104,8 @@ public:
       Timer t;
       sensor_msgs::msg::PointCloud2 cloud;
       cloud.header.frame_id = map_frame_;
-      cloud.header.stamp = stamp.nanoseconds() == 0 ? nh_->get_clock()->now()
-                                                    : stamp;
+      cloud.header.stamp =
+          stamp.nanoseconds() == 0 ? nh_->get_clock()->now() : stamp;
       map_.create_cloud_msg(indices, cloud);
       pub->publish(cloud);
       RCLCPP_DEBUG(nh_->get_logger(), "Sending cloud %s: %.3f s.",

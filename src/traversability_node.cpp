@@ -83,8 +83,7 @@ public:
   }
 
   void advertise() {
-    cloud_pub_ =
-        create_publisher<sensor_msgs::msg::PointCloud2>("output", 2);
+    cloud_pub_ = create_publisher<sensor_msgs::msg::PointCloud2>("output", 2);
   }
 
   void subscribe() {
@@ -94,8 +93,10 @@ public:
     }
     cloud_sub_ = create_subscription<sensor_msgs::msg::PointCloud2>(
         "input", 2,
-        [this](const std::shared_ptr<const sensor_msgs::msg::PointCloud2>
-                   &msg) { this->on_cloud(msg); });
+        [this](
+            const std::shared_ptr<const sensor_msgs::msg::PointCloud2> &msg) {
+          this->on_cloud(msg);
+        });
   }
 
   void
@@ -122,8 +123,8 @@ public:
     proc_.process(*msg, tf.transform, *output);
     const size_t n = num_points(*output);
     cloud_pub_->publish(std::move(output));
-    RCLCPP_INFO(get_logger(), "Traversability estimated at %lu points: %f s.", n,
-                t.seconds_elapsed());
+    RCLCPP_INFO(get_logger(), "Traversability estimated at %lu points: %f s.",
+                n, t.seconds_elapsed());
   }
 
 protected:

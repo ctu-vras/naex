@@ -7,12 +7,12 @@
 #include <boost/graph/breadth_first_search.hpp>
 #include <boost/graph/dijkstra_shortest_paths_no_color_map.hpp>
 #include <boost/graph/filtered_graph.hpp>
-#include <rclcpp/rclcpp.hpp>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
 #include <limits>
+#include <rclcpp/rclcpp.hpp>
 #include <vector>
 
 namespace naex {
@@ -311,8 +311,8 @@ protected:
     // Stopping on the goal only makes sense when the goal is a cell we have.
     VertexId goal = INVALID_VERTEX_ID;
     if (is_goal_explored) {
-      goal = grid.find_cell(
-          grid.point_to_cell({goal_point.x(), goal_point.y()}));
+      goal =
+          grid.find_cell(grid.point_to_cell({goal_point.x(), goal_point.y()}));
     }
     const AstarGoalVisitor visitor(goal, is_goal_explored, grid, max_costs);
     const AStarHeuristic<N> heuristic(grid, goal_point);

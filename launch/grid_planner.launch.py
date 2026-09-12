@@ -13,11 +13,10 @@ def generate_launch_description():
                 parameters=[
                     {
                         "use_astar": True,
-                        "astar_max_range": 50.0, # meters radius to perform search around the start vertex
-                        "frontier_min_dist": 2.,    # generally keep this above lookahead point distance of controller
-                        "frontier_max_neighbors": 7, # probably don't change this
+                        "astar_max_range": 50.0,  # meters radius to perform search around the start vertex
+                        "frontier_min_dist": 2.0,  # generally keep this above lookahead point distance of controller
+                        "frontier_max_neighbors": 7,  # probably don't change this
                         "max_relative_dist_to_goal": 2.0,
-
                         # if start is further than this from the nearest traversable point,
                         # we will just plan a straight line to the goal
                         # (this should only happen when using navigate through poses)
@@ -25,7 +24,6 @@ def generate_launch_description():
                         # I could see this being a problem when we start the robot and its
                         # position is naturally unexplored and at the same time there is obstacles all around
                         "max_start_to_traversable_dist": 2.0,
-                        
                         "position_field": "x",
                         "map_frame": "local_odom",
                         "robot_frame": "base_link",
@@ -77,10 +75,9 @@ def generate_launch_description():
                         # Cost layer each cost field is written to; defaults to
                         # the index of the field.  Must not name adhoc_layer.
                         "cloud_levels": [0],
-
                         # Don't forget that cloud_weights are not relative, becuase in the planner they are combined
                         # with the euclidean length of the edge in meters.
-                        # E.g. if we weight the geometry cloud by 10. and we get a 0.5 geometry cost, it tranlates to 
+                        # E.g. if we weight the geometry cloud by 10. and we get a 0.5 geometry cost, it tranlates to
                         # a cost of 5. for an edge of the graph of size 1 meter (where the base cost is 1 per 1 meter traveled).
                         # So we are saying that the path along this edge is equal to finding a different route to the same goal point
                         # of length 5 meters and with 0 cost.
@@ -90,7 +87,7 @@ def generate_launch_description():
                         "max_costs_relative": [
                             0.8,
                         ],
-                        "default_costs": [   # Careful that these are never multiplied by the cloud_weights!!!
+                        "default_costs": [  # Careful that these are never multiplied by the cloud_weights!!!
                             0.5
                         ],
                         "neighborhood": 8,
@@ -105,7 +102,7 @@ def generate_launch_description():
                         "mode": 2,
                         # Ad-hoc cost parameters; uncomment to enable
                         "adhoc_costs": ["sidelobes"],
-                        #"adhoc_costs": ["nothing"],
+                        # "adhoc_costs": ["nothing"],
                         "adhoc_layer": 3,
                         # Sidelobes strategy parameters
                         "sidelobes_offset_distance": 1.0,
@@ -115,7 +112,7 @@ def generate_launch_description():
                     }
                 ],
                 remappings=[
-                    #("input_cloud_0", "osm_grid"),
+                    # ("input_cloud_0", "osm_grid"),
                     ("input_cloud_0", "geometric_traversability_cloud"),
                 ],
             )

@@ -1,8 +1,8 @@
 #pragma once
 
-#include <naex/cloud_filter.h>
 #include <Eigen/Dense>
 #include <limits>
+#include <naex/cloud_filter.h>
 #include <string>
 
 namespace naex {

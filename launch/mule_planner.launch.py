@@ -14,8 +14,8 @@ def generate_launch_description():
     ]
 
     return LaunchDescription(
-        declared_args +
-        [
+        declared_args
+        + [
             Node(
                 package="naex",
                 executable="mule_planner",
@@ -23,14 +23,12 @@ def generate_launch_description():
                 output="screen",
                 parameters=[
                     {
-                        "astar_max_range": 50.0, # meters radius to perform search around the start vertex
-
+                        "astar_max_range": 50.0,  # meters radius to perform search around the start vertex
                         # if start is further than this from the nearest traversable point,
                         # replanning fails and an empty path is published
                         "max_start_to_traversable_dist": 5.0,
                         # publish a replanned prefix by itself only if it is at least this long
                         "min_traversable_path_length": 3.0,
-                        
                         "robot_frame": "base_link",
                         "position_field": "x",
                         "max_cloud_age": 9999999999.0,
@@ -41,12 +39,12 @@ def generate_launch_description():
                         "default_costs": [0.5],
                         "neighborhood": 8,
                         "obstacle_cost_threshold": 0.7,
-                        "path_sampling_dist": 0.1, # meters between path waypoints (0 = disabled)
-                        "use_sim_time": LaunchConfiguration("use_sim_time")
+                        "path_sampling_dist": 0.1,  # meters between path waypoints (0 = disabled)
+                        "use_sim_time": LaunchConfiguration("use_sim_time"),
                     }
                 ],
                 remappings=[
-                    #("input_cloud_0", "osm_grid"),
+                    # ("input_cloud_0", "osm_grid"),
                     ("path", "/path"),
                     ("points", "/terrain_map"),
                 ],
