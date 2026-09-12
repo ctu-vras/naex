@@ -165,8 +165,6 @@ void Planner::configure() {
   map_.max_occ_counter_ =
       nh_->declare_parameter<int>("max_occ_counter", map_.max_occ_counter_);
 
-  filter_robots_ = nh_->declare_parameter<bool>("filter_robots", filter_robots_);
-
   const bool among_robots =
       std::find(robot_frames_.begin(), robot_frames_.end(), robot_frame_) !=
       robot_frames_.end();

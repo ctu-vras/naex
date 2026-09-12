@@ -155,7 +155,7 @@ observed. The node assumes an external localization is provided.
 
 Input and frames: `position_name`, `normal_name`, `map_frame`, `robot_frame`,
 `robot_frames`, `max_cloud_age`, `input_range`, `num_input_clouds`,
-`input_queue_size`, `points_min_dist`, `filter_robots`.
+`input_queue_size`, `points_min_dist`.
 
 Traversability: `max_pitch`, `max_roll`, `inclination_penalty`,
 `neighborhood_knn`, `neighborhood_radius`, `normal_radius`,
@@ -173,7 +173,8 @@ Rewards and planning: `viewpoints_update_freq`, `min_vp_distance`,
 `bootstrap_z`.
 
 `min_points_obstacle` is a floating-point parameter despite its name.
-`launch/planner.launch.py` and `launch/mapper.launch.py` document working values.
+`launch/planner.launch.py` documents working values; `planning_freq: 0.0`
+turns the node into a mapper.
 
 #### Subscribed topics
 
@@ -293,9 +294,6 @@ arrays `[xmin, xmax, ymin, ymax, zmin, zmax]`.
 - `get_plan.py` — one-shot client of the `get_plan` service. Parameters:
   `start`, `goal` (three floats, or a `"x,y,z"` string; NaN by default),
   `tolerance` (32.0), `verbose` (false).
-- `lidar_inertial_odom.py` — work-in-progress lidar-inertial odometry; the
-  projective ICP is still a stub. Needs `torch` (optional dependency of this
-  package) and `ros2_numpy`.
 - `mock_map_publisher.py`, `mock_tf_publisher.py`, `test_planner_client.py` —
   fixtures for `launch/test_planner.launch.py`.
 
@@ -309,36 +307,34 @@ Run the grid planner against mock data:
 
     ros2 launch naex test_planner.launch.py
 
-Launch the point-map planner (assumes localization in the `subt` frame):
+Benchmark the grid planner headlessly (synthetic clouds, no display):
 
-    ros2 launch naex planner.launch.py robot:=X1 robot_type:=explorer_x1
+    ros2 launch naex bench_grid_planner.launch.py field_size:=200.0 duration:=30.0
+
+Launch the point-map planner:
+
+    ros2 launch naex planner.launch.py points:=points_slow
 
 Launch the follower:
 
-    ros2 launch naex follower.launch.py robot:=X1 robot_type:=explorer_x1
-
-Launch the whole stack (preprocessing, SLAM, planner, follower, recording):
-
-    ros2 launch naex naex.launch.py
-
-Play recorded bags from SubT virtual robots X1, X2, X3 in the current directory:
-
-    bags=$(ls $(pwd)/*.mcap) ros2 launch naex playback.launch.py rate:=10.0
+    ros2 launch naex follower.launch.py path:=path cmd_vel:=cmd_vel
 
 Every launch file takes a `use_sim_time` argument; run
 `ros2 launch naex <file>.launch.py --show-args` for the rest.
 
-### Launch files depending on unported packages
-
-`odom.launch.py`, `slam.launch.py` and the `dynamic_mapper` part of
-`husky.launch.py` still reference ROS 1-only packages (`subt_virtual`,
-`robot_pose_ekf`, `ethzasl_icp_mapper`). The configuration is preserved and the
-gaps are marked with `TODO(ros2)` comments in the files; those nodes cannot be
-started until a ROS 2 equivalent is chosen. `preproc.launch.py` and
-`husky.launch.py` use `pcl_ros` filter nodes in place of the ROS 1 PCL nodelets.
-
-The libpointmatcher configurations in `launch/dynamic_mapper/` are not
-ROS-version specific and were kept as they are. The old rviz1 configurations
-were moved untouched to `launch/legacy_rviz1/`; they cannot be loaded by rviz2.
 The rviz2 configuration used by `test_planner.launch.py` is
 `config/grid_planner_test.rviz`.
+
+### Removed with the SubT era
+
+The launch files of the DARPA SubT stack (`naex.launch.py`, `preproc.launch.py`,
+`odom.launch.py`, `slam.launch.py`, `tf.launch.py`, `footprint.launch.py`,
+`record.launch.py`, `mapper.launch.py`, `husky.launch.py`, `playback.launch.py`,
+`play_skoda.launch.py`), the rviz1 configurations in `launch/legacy_rviz1/`, the
+libpointmatcher configurations in `launch/dynamic_mapper/` and
+`scripts/lidar_inertial_odom.py` were deleted: they launch packages that have no
+ROS 2 release (`subt_virtual`, `robot_pose_ekf`, `ethzasl_icp_mapper`,
+`static_transform_mux`) or configure robots that no longer exist (x1, x2, dtr,
+jeanine, marv, tradr, absolem, husky). The per-robot parameter blocks were
+likewise dropped from `planner.launch.py` and `follower.launch.py`. Git history
+has them if a robot ever comes back.
