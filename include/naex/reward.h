@@ -18,19 +18,6 @@ inline rclcpp::Logger reward_logger() {
   return rclcpp::get_logger("naex.reward");
 }
 
-template <typename T> T clamp(T x, T lo, T hi) {
-  return (x < lo) ? lo : (x > hi) ? hi : x;
-}
-
-template <typename P> void suppress_reward(P &point) {
-  if (point.position_[0] >= -60. && point.position_[0] <= 0. &&
-      point.position_[1] >= -30. && point.position_[1] <= 30. &&
-      point.position_[2] >= -30. && point.position_[2] <= 30.) {
-    Value dist_from_origin = ConstVec3Map(point.position_).norm();
-    point.reward_ /= (1. + std::pow(dist_from_origin, 2.f));
-  }
-}
-
 template <typename T> T distance_coverage(T dist, T mean = 3.0, T std = 1.5) {
   const auto z = (dist - mean) / std;
   const auto p = std::exp(-z * z);
@@ -39,7 +26,7 @@ template <typename T> T distance_coverage(T dist, T mean = 3.0, T std = 1.5) {
 
 template <typename T> T update_coverage(T prior, T prob) {
   prob = prob + prior - prior * prob;
-  prob = clamp<T>(prob, 0.0, 1.0);
+  prob = std::clamp<T>(prob, 0.0, 1.0);
   return prob;
 }
 
@@ -132,9 +119,7 @@ void collect_rewards(std::vector<P> &points, const std::vector<Index> &indices,
 template <typename P>
 void collect_rewards(std::vector<P> &points, const std::vector<Index> &indices,
                      Value mean = 3.0, Value std = 1.5,
-                     Value max_collect_dist = 10.0, Value self_factor = 0.0,
-                     bool suppress_base_reward = true) {
-  (void)self_factor;
+                     Value max_collect_dist = 10.0) {
   Timer t;
   if (indices.empty()) {
     return;
@@ -206,9 +191,6 @@ void collect_rewards(std::vector<P> &points, const std::vector<Index> &indices,
     // Assume constant rewards from all represented points.
     auto &pt = points[indices[i]];
     pt.reward_ = r_ptr->support_ * r_ptr->reward_;
-    if (suppress_base_reward) {
-      suppress_reward(pt);
-    }
   }
 
   RCLCPP_INFO(reward_logger(),

@@ -267,31 +267,26 @@ same `get_plan` service; `start` and `goal` may be NaN with the same meaning.
 
 If `goal` is not provided, an exploration strategy selects it, maximizing
 reward/cost ratio. The reward captures visiting points from close-enough
-distance and prefers frontier points. Visiting points with the current robot,
-as opposed to other robots, may be preferred (`self_factor` > 0).
-Positions of all robots are considered in assessing whether a point has been
-observed. The node assumes an external localization is provided.
+distance and prefers frontier points. The node assumes an external
+localization is provided.
 
 #### Parameters
 
 Input and frames: `position_name`, `normal_name`, `map_frame`, `robot_frame`,
-`robot_frames`, `max_cloud_age`, `input_range`, `num_input_clouds`,
-`input_queue_size`, `points_min_dist`.
+`max_cloud_age`, `input_range`, `num_input_clouds`, `input_queue_size`,
+`points_min_dist`.
 
 Traversability: `max_pitch`, `max_roll`, `inclination_penalty`,
-`neighborhood_knn`, `neighborhood_radius`, `normal_radius`,
-`max_nn_height_diff`, `min_points_obstacle`, `max_ground_diff_std`,
+`neighborhood_radius`, `min_points_obstacle`, `max_ground_diff_std`,
 `max_mean_abs_ground_diff`, `edge_min_centroid_offset`, `min_dist_to_obstacle`,
 `clearance_radius`, `clearance_low`, `clearance_high`.
 
 Occupancy: `min_num_empty`, `min_empty_ratio`, `max_occ_counter`,
 `min_empty_cos`.
 
-Rewards and planning: `viewpoints_update_freq`, `min_vp_distance`,
-`max_vp_distance`, `collect_rewards`, `full_coverage_dist`,
-`coverage_dist_spread`, `self_factor`, `suppress_base_reward`, `path_cost_pow`,
-`min_path_cost`, `planning_freq`, `random_start`, `plan_from_goal_dist`,
-`bootstrap_z`.
+Rewards and planning: `viewpoints_update_freq`, `max_vp_distance`,
+`full_coverage_dist`, `coverage_dist_spread`, `path_cost_pow`,
+`min_path_cost`, `planning_freq`, `random_start`, `plan_from_goal_dist`.
 
 `min_points_obstacle` is a floating-point parameter despite its name.
 `launch/planner.launch.py` documents working values; `planning_freq: 0.0`
@@ -300,15 +295,14 @@ turns the node into a mapper.
 #### Subscribed topics
 
 - `input_cloud_0`, `input_cloud_1`, … [sensor_msgs/msg/PointCloud2]
-- `input_map` [sensor_msgs/msg/PointCloud2]
 
 #### Published topics
 
-- `viewpoints`, `other_viewpoints` [sensor_msgs/msg/PointCloud2] — viewpoints
-  considered in rewards, for this robot and the others.
+- `viewpoints` [sensor_msgs/msg/PointCloud2] — viewpoints considered in
+  rewards.
 - `map` [sensor_msgs/msg/PointCloud2] — complete map used for planning; see the
   `flags` bit field for point labels (the enum is in `include/naex/types.h`).
-- `updated_map`, `map_diff` [sensor_msgs/msg/PointCloud2] — map deltas.
+- `updated_map` [sensor_msgs/msg/PointCloud2] — map deltas.
 - `dirty_map` [sensor_msgs/msg/PointCloud2] — points queued for update.
 - `local_map` [sensor_msgs/msg/PointCloud2] — local map around the robot.
 - `path` [nav_msgs/msg/Path] — planned path.

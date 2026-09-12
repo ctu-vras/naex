@@ -89,10 +89,6 @@ void Planner::configure() {
   map_frame_ = nh_->declare_parameter<std::string>("map_frame", map_frame_);
   robot_frame_ =
       nh_->declare_parameter<std::string>("robot_frame", robot_frame_);
-  // NB: ROS 1 took a {key: frame} dictionary here, which ROS 2 parameters
-  // cannot express. Only the frames are used, so this is a plain list now.
-  robot_frames_ = nh_->declare_parameter<std::vector<std::string>>(
-      "robot_frames", robot_frames_);
 
   max_cloud_age_ =
       nh_->declare_parameter<float>("max_cloud_age", max_cloud_age_);
@@ -104,8 +100,6 @@ void Planner::configure() {
 
   map_.neighborhood_radius_ = nh_->declare_parameter<float>(
       "neighborhood_radius", map_.neighborhood_radius_);
-  normal_radius_ =
-      nh_->declare_parameter<float>("normal_radius", normal_radius_);
 
   // Parameters which may be updated at runtime, see update_params().
   nh_->declare_parameter<float>("clearance_radius", map_.clearance_radius_);
@@ -125,20 +119,13 @@ void Planner::configure() {
 
   viewpoints_update_freq_ = nh_->declare_parameter<float>(
       "viewpoints_update_freq", viewpoints_update_freq_);
-  min_vp_distance_ =
-      nh_->declare_parameter<float>("min_vp_distance", min_vp_distance_);
   max_vp_distance_ =
       nh_->declare_parameter<float>("max_vp_distance", max_vp_distance_);
-  collect_rewards_ =
-      nh_->declare_parameter<bool>("collect_rewards", collect_rewards_);
   full_coverage_dist_ =
       nh_->declare_parameter<float>("full_coverage_dist", full_coverage_dist_);
   coverage_dist_spread_ = nh_->declare_parameter<float>("coverage_dist_spread",
                                                         coverage_dist_spread_);
 
-  self_factor_ = nh_->declare_parameter<float>("self_factor", self_factor_);
-  suppress_base_reward_ = nh_->declare_parameter<bool>("suppress_base_reward",
-                                                       suppress_base_reward_);
   path_cost_pow_ =
       nh_->declare_parameter<float>("path_cost_pow", path_cost_pow_);
   min_path_cost_ =
@@ -148,7 +135,6 @@ void Planner::configure() {
   random_start_ = nh_->declare_parameter<bool>("random_start", random_start_);
   plan_from_goal_dist_ = nh_->declare_parameter<double>("plan_from_goal_dist",
                                                         plan_from_goal_dist_);
-  bootstrap_z_ = nh_->declare_parameter<float>("bootstrap_z", bootstrap_z_);
 
   int num_input_clouds = nh_->declare_parameter<int>("num_input_clouds", 1);
   num_input_clouds = std::max(1, num_input_clouds);
@@ -166,21 +152,7 @@ void Planner::configure() {
   map_.max_occ_counter_ =
       nh_->declare_parameter<int>("max_occ_counter", map_.max_occ_counter_);
 
-  const bool among_robots =
-      std::find(robot_frames_.begin(), robot_frames_.end(), robot_frame_) !=
-      robot_frames_.end();
-  if (!among_robots) {
-    RCLCPP_INFO(nh_->get_logger(), "Adding robot frame %s to robot frames.",
-                robot_frame_.c_str());
-    robot_frames_.push_back(robot_frame_);
-  }
-  for (const auto &f : robot_frames_) {
-    RCLCPP_INFO(nh_->get_logger(), "Robot frame: %s", f.c_str());
-  }
-
   viewpoints_.reserve(size_t(7200. * viewpoints_update_freq_) * 3);
-  other_viewpoints_.reserve(size_t(7200. * viewpoints_update_freq_) * 3 *
-                            robot_frames_.size());
 
   tf_ = std::make_shared<tf2_ros::Buffer>(nh_->get_clock(),
                                           tf2::durationFromSec(30.0));
@@ -188,28 +160,17 @@ void Planner::configure() {
 
   viewpoints_pub_ =
       nh_->create_publisher<sensor_msgs::msg::PointCloud2>("viewpoints", 5);
-  other_viewpoints_pub_ = nh_->create_publisher<sensor_msgs::msg::PointCloud2>(
-      "other_viewpoints", 5);
   map_pub_ = nh_->create_publisher<sensor_msgs::msg::PointCloud2>("map", 5);
   updated_map_pub_ =
       nh_->create_publisher<sensor_msgs::msg::PointCloud2>("updated_map", 5);
   dirty_map_pub_ =
       nh_->create_publisher<sensor_msgs::msg::PointCloud2>("dirty_map", 5);
-  map_diff_pub_ =
-      nh_->create_publisher<sensor_msgs::msg::PointCloud2>("map_diff", 5);
   local_map_pub_ =
       nh_->create_publisher<sensor_msgs::msg::PointCloud2>("local_map", 5);
   path_pub_ = nh_->create_publisher<nav_msgs::msg::Path>("path", 5);
 
   rclcpp::SubscriptionOptions sub_opts;
   sub_opts.callback_group = callback_group_;
-
-  cloud_sub_ = nh_->create_subscription<sensor_msgs::msg::PointCloud2>(
-      "input_map", queue_size_,
-      [this](const std::shared_ptr<const sensor_msgs::msg::PointCloud2> &msg) {
-        this->cloud_received(msg);
-      },
-      sub_opts);
 
   for (int i = 0; i < num_input_clouds; ++i) {
     std::stringstream ss;
@@ -254,8 +215,8 @@ void Planner::configure() {
              GetPlan::Response::SharedPtr res) { this->plan(req, res); },
       rclcpp::ServicesQoS(), callback_group_);
 
-  // Waiting for other robots and bootstrapping the map needs the clock and
-  // the TF buffer, i.e. a spinning executor. Do it from a one-shot timer.
+  // Finishing initialization needs the clock and the TF buffer, i.e. a
+  // spinning executor. Do it from a one-shot timer.
   init_timer_ = nh_->create_wall_timer(
       std::chrono::milliseconds(1),
       [this]() {
@@ -266,16 +227,10 @@ void Planner::configure() {
 }
 
 void Planner::initialize() {
-  Timer t;
-  RCLCPP_INFO(nh_->get_logger(), "Initializing. Waiting for other robots...");
-  find_robots(map_frame_,
-              rclcpp::Time(0, 0, nh_->get_clock()->get_clock_type()), 15.f);
   Lock lock(initialized_mutex_);
   initialized_ = true;
   time_initialized_ = nh_->get_clock()->now().seconds();
-  bootstrap_map();
-  RCLCPP_INFO(nh_->get_logger(), "Initialized at %.1f s (%.3f s).",
-              time_initialized_, t.seconds_elapsed());
+  RCLCPP_INFO(nh_->get_logger(), "Initialized at %.1f s.", time_initialized_);
 }
 
 void Planner::update_params() {
@@ -299,157 +254,49 @@ void Planner::update_params() {
                t.seconds_elapsed());
 }
 
-void Planner::bootstrap_map() {
-  if (std::isnan(bootstrap_z_)) {
-    RCLCPP_WARN(nh_->get_logger(), "Map not bootstrapped (invalid z).");
-    return;
-  }
-  RCLCPP_INFO(nh_->get_logger(),
-              "Bootstrapping map with traversable robot neighborhood.");
-
-  const int n = int(4 * map_.clearance_radius_ / map_.points_min_dist_ + 1);
-  const int n_pts = n * n;
-  const auto now = nh_->get_clock()->now();
-
-  Eigen::Isometry3f robot_to_map;
-  try {
-    const auto cloud_to_map_tf =
-        tf_->lookupTransform(map_frame_, robot_frame_, tf2::TimePointZero,
-                             tf2::durationFromSec(15.));
-    robot_to_map =
-        tf2::transformToEigen(cloud_to_map_tf.transform).cast<float>();
-  } catch (const tf2::TransformException &ex) {
-    RCLCPP_ERROR(nh_->get_logger(),
-                 "Could not bootstrap map due to missing transform from %s "
-                 "into map %s: %s.",
-                 robot_frame_.c_str(), map_frame_.c_str(), ex.what());
-    return;
-  }
-  RCLCPP_INFO(nh_->get_logger(), "Position of %s in map %s: [%.1f %.1f %.1f].",
-              robot_frame_.c_str(), map_frame_.c_str(), robot_to_map(0, 3),
-              robot_to_map(1, 3), robot_to_map(2, 3));
-
-  sensor_msgs::msg::PointCloud2 cloud;
-  cloud.header.frame_id = map_frame_;
-  cloud.header.stamp = now;
-  cloud.is_bigendian = bigendian();
-  cloud.is_dense = true;
-  append_field<float>("x", 1, cloud);
-  append_field<float>("y", 1, cloud);
-  append_field<float>("z", 1, cloud);
-  resize_cloud(cloud, uint32_t(1), uint32_t(n_pts));
-  sensor_msgs::PointCloud2Iterator<float> pt(cloud, "x");
-
-  for (int i = 0; i < n; ++i) {
-    for (int j = 0; j < n; ++j, ++pt) {
-      Vec3 x_cloud((-n / 2 + i) * map_.points_min_dist_,
-                   (-n / 2 + j) * map_.points_min_dist_, bootstrap_z_);
-      Vec3 x_map = robot_to_map * x_cloud;
-      pt[0] = x_map(0);
-      pt[1] = x_map(1);
-      pt[2] = x_map(2);
-    }
-  }
-  input_map_received(cloud);
-  RCLCPP_WARN(nh_->get_logger(),
-              "Map bootstrapped with %i input points (%lu in map).", n_pts,
-              map_.size());
-}
-
-Value Planner::time_from_init(const double time) const {
-  return Value(time - time_initialized_);
-}
-
-Value Planner::time_from_init(const rclcpp::Time &time) const {
-  return time_from_init(time.seconds());
-}
-
 void Planner::gather_viewpoints() {
-  RCLCPP_DEBUG(nh_->get_logger(), "Gathering viewpoints for %lu actors.",
-               robot_frames_.size());
+  RCLCPP_DEBUG(nh_->get_logger(), "Gathering viewpoint.");
   Timer t;
   if (map_frame_.empty()) {
     RCLCPP_ERROR(nh_->get_logger(),
-                 "Could not gather robot positions due to missing map frame.");
+                 "Could not gather robot position due to missing map frame.");
     return;
   }
   const auto current_expected = nh_->get_clock()->now();
   Lock lock(viewpoints_mutex_);
-  for (const auto &frame : robot_frames_) {
-    try {
-      // Try to get most recent viewpoints.
-      const auto timeout = std::max(
-          3.0 - (nh_->get_clock()->now() - current_expected).seconds(), 0.0);
-      const auto tf =
-          tf_->lookupTransform(map_frame_, frame, current_expected,
-                               rclcpp::Duration::from_seconds(timeout));
+  try {
+    // Try to get the most recent viewpoint.
+    const auto timeout = std::max(
+        3.0 - (nh_->get_clock()->now() - current_expected).seconds(), 0.0);
+    const auto tf =
+        tf_->lookupTransform(map_frame_, robot_frame_, current_expected,
+                             rclcpp::Duration::from_seconds(timeout));
 
-      Vec3 pos(Value(tf.transform.translation.x),
-               Value(tf.transform.translation.y),
-               Value(tf.transform.translation.z));
+    Vec3 pos(Value(tf.transform.translation.x),
+             Value(tf.transform.translation.y),
+             Value(tf.transform.translation.z));
+    viewpoints_.push_back(pos);
 
-      const bool self = (frame == robot_frame_);
-      if (self) {
-        viewpoints_.push_back(pos);
-      } else {
-        other_viewpoints_.push_back(pos);
-      }
-
-      if (map_.empty()) {
-        RCLCPP_WARN(nh_->get_logger(),
-                    "Empty map, no points updated from gathered viewpoints.");
-        continue;
-      }
+    if (map_.empty()) {
+      RCLCPP_WARN(nh_->get_logger(),
+                  "Empty map, no points updated from gathered viewpoint.");
+    } else {
       Lock cloud_lock(map_.cloud_mutex_);
       Lock index_lock(map_.index_mutex_);
 
-      if (collect_rewards_) {
-        RadiusQuery<Value> q1(*map_.index_, FlannMat(pos.data(), 1, 3),
-                              2 * max_vp_distance_);
+      RadiusQuery<Value> q1(*map_.index_, FlannMat(pos.data(), 1, 3),
+                            2 * max_vp_distance_);
 
-        std::vector<Vec3> vps = {pos};
-        update_coverage(map_.cloud_, q1.nn_[0], vps, full_coverage_dist_,
-                        coverage_dist_spread_, max_vp_distance_, true, self);
+      std::vector<Vec3> vps = {pos};
+      update_coverage(map_.cloud_, q1.nn_[0], vps, full_coverage_dist_,
+                      coverage_dist_spread_, max_vp_distance_, true, true);
 
-        collect_rewards(map_.cloud_, q1.nn_[0], full_coverage_dist_,
-                        coverage_dist_spread_, max_vp_distance_, self_factor_,
-                        suppress_base_reward_);
-      } else {
-        RadiusQuery<Value> q(*map_.index_, FlannMat(pos.data(), 1, 3),
-                             max_vp_distance_);
-        assert(q.nn_.size() == 1);
-        assert(q.dist_.size() == 1);
-
-        RCLCPP_DEBUG(nh_->get_logger(),
-                     "%lu / %lu points within %.1f m from %s origin.",
-                     q.nn_[0].size(), map_.index_->size(), max_vp_distance_,
-                     frame.c_str());
-        for (size_t i = 0; i < q.nn_[0].size(); ++i) {
-          const Vertex v = q.nn_[0][i];
-          const Value d = std::sqrt(q.dist_[0][i]);
-          const Value ts = time_from_init(current_expected);
-          // TODO: Account for time to enable patrolling.
-          if (self) {
-            map_.cloud_[v].dist_to_actor_ =
-                (std::isfinite(map_.cloud_[v].actor_last_visit_)
-                     ? std::min(map_.cloud_[v].dist_to_actor_, d)
-                     : d);
-            map_.cloud_[v].actor_last_visit_ = ts;
-          } else {
-            map_.cloud_[v].dist_to_other_actors_ =
-                (std::isfinite(map_.cloud_[v].other_actors_last_visit_)
-                     ? std::min(map_.cloud_[v].dist_to_other_actors_, d)
-                     : d);
-            map_.cloud_[v].other_actors_last_visit_ = ts;
-          }
-        }
-      }
-    } catch (const tf2::TransformException &ex) {
-      RCLCPP_WARN_THROTTLE(nh_->get_logger(), *nh_->get_clock(), 5000,
-                           "Viewpoint of %s not updated: %s.", frame.c_str(),
-                           ex.what());
-      continue;
+      collect_rewards(map_.cloud_, q1.nn_[0], full_coverage_dist_,
+                      coverage_dist_spread_, max_vp_distance_);
     }
+  } catch (const tf2::TransformException &ex) {
+    RCLCPP_WARN_THROTTLE(nh_->get_logger(), *nh_->get_clock(), 5000,
+                         "Viewpoint not updated: %s.", ex.what());
   }
   const auto now = nh_->get_clock()->now();
   if (viewpoints_pub_->get_subscription_count() > 0 && !viewpoints_.empty()) {
@@ -460,19 +307,8 @@ void Planner::gather_viewpoints() {
     vp_cloud.header.stamp = now;
     viewpoints_pub_->publish(vp_cloud);
   }
-  if (other_viewpoints_pub_->get_subscription_count() > 0 &&
-      !other_viewpoints_.empty()) {
-    sensor_msgs::msg::PointCloud2 other_vp_cloud;
-    flann::Matrix<Elem> other_vp(other_viewpoints_.data()->data(),
-                                 other_viewpoints_.size(), 3);
-    create_xyz_cloud(other_vp, other_vp_cloud);
-    other_vp_cloud.header.frame_id = map_frame_;
-    other_vp_cloud.header.stamp = now;
-    other_viewpoints_pub_->publish(other_vp_cloud);
-  }
-  RCLCPP_INFO(nh_->get_logger(),
-              "Gathering viewpoints for %lu actors done (%.3f s).",
-              robot_frames_.size(), t.seconds_elapsed());
+  RCLCPP_INFO(nh_->get_logger(), "Gathering viewpoint done (%.3f s).",
+              t.seconds_elapsed());
 }
 
 void Planner::trace_path_indices(Vertex start, Vertex goal,
@@ -526,85 +362,6 @@ void Planner::append_path(const std::vector<Vertex> &path_indices,
     }
     path.poses.push_back(pose);
   }
-}
-
-Buffer<Elem> Planner::viewpoint_dist(const flann::Matrix<Elem> &points) {
-  Timer t;
-  Buffer<Elem> dist(points.rows);
-  std::vector<Vec3> vp_copy;
-  {
-    Lock lock(viewpoints_mutex_);
-    if (viewpoints_.empty()) {
-      RCLCPP_WARN(nh_->get_logger(),
-                  "No viewpoints gathered. Return infinity.");
-      std::fill(dist.begin(), dist.end(),
-                std::numeric_limits<Elem>::infinity());
-      return dist;
-    }
-    vp_copy = viewpoints_;
-  }
-  const size_t n_vp = vp_copy.size();
-  RCLCPP_INFO(nh_->get_logger(), "Number of viewpoints: %lu.", n_vp);
-  flann::Matrix<Elem> vp(vp_copy.data()->data(), n_vp, 3);
-  flann::Index<flann::L2_3D<Elem>> vp_index(vp,
-                                            flann::KDTreeSingleIndexParams());
-  vp_index.buildIndex();
-  Query<Elem> vp_query(vp_index, points, 1);
-  return vp_query.dist_buf_;
-}
-
-Buffer<Elem> Planner::other_viewpoint_dist(const flann::Matrix<Elem> &points) {
-  Timer t;
-  Buffer<Elem> dist(points.rows);
-  std::vector<Vec3> vp_copy;
-  {
-    Lock lock(viewpoints_mutex_);
-    if (other_viewpoints_.empty()) {
-      RCLCPP_WARN(nh_->get_logger(),
-                  "No viewpoints gathered from other robots. Return infinity.");
-      std::fill(dist.begin(), dist.end(),
-                std::numeric_limits<Elem>::infinity());
-      return dist;
-    }
-    vp_copy = other_viewpoints_;
-  }
-  const size_t n_vp = vp_copy.size();
-  RCLCPP_INFO(nh_->get_logger(), "Number of viewpoints from other robots: %lu.",
-              n_vp);
-  flann::Matrix<Elem> vp(vp_copy.data()->data(), n_vp, 3);
-  flann::Index<flann::L2_3D<Elem>> vp_index(vp,
-                                            flann::KDTreeSingleIndexParams());
-  vp_index.buildIndex();
-  Query<Elem> vp_query(vp_index, points, 1);
-  return vp_query.dist_buf_;
-}
-
-void Planner::input_map_received(const sensor_msgs::msg::PointCloud2 &cloud) {
-  Lock cloud_lock(map_.cloud_mutex_);
-  Lock index_lock(map_.index_mutex_);
-  Lock dirty_lock(map_.dirty_mutex_);
-
-  map_.cloud_.clear();
-  map_.graph_.clear();
-  map_.clear_dirty();
-
-  auto points = flann_matrix_view<Value>(
-      const_cast<sensor_msgs::msg::PointCloud2 &>(cloud), position_name_,
-      uint32_t(3));
-  Vec3 zero(0, 0, 0);
-  Value *origin_ptr =
-      !viewpoints_.empty() ? viewpoints_.data()->data() : zero.data();
-  flann::Matrix<Value> origin(origin_ptr, 1, 3);
-  map_.initialize(points, origin);
-  map_.update_dirty();
-  send_local_map(origin_ptr, cloud.header.stamp);
-}
-
-Value Planner::distance_reward(Value distance) const {
-  Value r = std::isfinite(distance) ? distance : max_vp_distance_;
-  r = r >= min_vp_distance_ ? r : 0.f;
-  r /= max_vp_distance_;
-  return r;
 }
 
 bool Planner::plan(GetPlan::Request::SharedPtr req,
@@ -683,7 +440,7 @@ bool Planner::plan(GetPlan::Request::SharedPtr req,
                       Value(start.pose.position.y),
                       Value(start.pose.position.z));
   const Value start_tol =
-      req->tolerance > 0. ? req->tolerance : neighborhood_radius_;
+      req->tolerance > 0. ? req->tolerance : map_.neighborhood_radius_;
   std::vector<Vertex> traversable;
   for (const auto v : map_.nearby_indices(start_position.data(), start_tol)) {
     if (!(map_.cloud_[v].flags_ & TRAVERSABLE) ||
@@ -780,18 +537,6 @@ bool Planner::plan(GetPlan::Request::SharedPtr req,
   // TODO: Account for time to enable patrolling (coverage half-life).
   Vertex v_goal = INVALID_VERTEX;
   for (size_t v = 0; v < path_costs.size(); ++v) {
-    if (!collect_rewards_) {
-      map_.cloud_[v].reward_ = std::max(
-          std::min(distance_reward(map_.cloud_[v].dist_to_actor_),
-                   distance_reward(map_.cloud_[v].other_actors_last_visit_)),
-          self_factor_ * distance_reward(map_.cloud_[v].dist_to_actor_));
-      map_.cloud_[v].reward_ *= (1 + map_.cloud_[v].num_edge_neighbors_);
-      // Decrease rewards in specific areas (staging area).
-      // TODO: Ensure correct frame (subt) is used here.
-      // TODO: Parametrize the areas.
-      suppress_reward(map_.cloud_[v]);
-    }
-
     // Keep original path cost, but discount for relative cost.
     map_.cloud_[v].path_cost_ = path_costs[v];
     map_.cloud_[v].relative_cost_ =
@@ -832,7 +577,6 @@ bool Planner::plan(GetPlan::Request::SharedPtr req,
   res->plan.poses.push_back(start);
   append_path(path_indices, map_.cloud_, res->plan);
   if (!res->plan.poses.empty()) {
-    last_start_ = res->plan.poses.front();
     last_goal_ = res->plan.poses.back();
   }
   RCLCPP_INFO(nh_->get_logger(),
@@ -844,78 +588,6 @@ bool Planner::plan(GetPlan::Request::SharedPtr req,
               map_.cloud_[v_goal].reward_, map_.cloud_[v_goal].relative_cost_,
               t.seconds_elapsed());
   return true;
-}
-
-void Planner::cloud_received(
-    const std::shared_ptr<const sensor_msgs::msg::PointCloud2> &cloud) {
-  RCLCPP_INFO(nh_->get_logger(), "Cloud received (%lu points).",
-              num_points(*cloud));
-  {
-    Lock lock(initialized_mutex_);
-    if (!initialized_) {
-      RCLCPP_INFO(nh_->get_logger(),
-                  "Skipping input cloud. Waiting for initialization.");
-      return;
-    }
-  }
-
-  // TODO: Build map from all aligned input clouds (interp tf).
-  // TODO: Recompute normals.
-  if (cloud->row_step != cloud->point_step * cloud->width) {
-    RCLCPP_ERROR(nh_->get_logger(),
-                 "Skipping cloud with unsupported row step.");
-    return;
-  }
-  const auto age =
-      (nh_->get_clock()->now() - rclcpp::Time(cloud->header.stamp)).seconds();
-  if (age > max_cloud_age_) {
-    RCLCPP_INFO(nh_->get_logger(), "Skipping cloud %.1f s > %.1f s old.", age,
-                max_cloud_age_);
-    return;
-  }
-  if (!map_frame_.empty() && map_frame_ != cloud->header.frame_id) {
-    RCLCPP_ERROR(nh_->get_logger(),
-                 "Cloud frame %s does not match specified map frame %s.",
-                 cloud->header.frame_id.c_str(), map_frame_.c_str());
-    return;
-  }
-
-  // TODO: Allow x[3] or x,y,z and normal[3] or normal_x,y,z.
-  const auto field_x = find_field(*cloud, position_name_);
-  if (!field_x) {
-    RCLCPP_ERROR(nh_->get_logger(), "Skipping cloud without positions.");
-    return;
-  }
-  if (field_x->datatype != sensor_msgs::msg::PointField::FLOAT32) {
-    RCLCPP_ERROR(nh_->get_logger(), "Skipping cloud with unsupported type %u.",
-                 field_x->datatype);
-    return;
-  }
-
-  const auto field_nx = find_field(*cloud, normal_name_);
-  if (!field_nx) {
-    RCLCPP_ERROR(nh_->get_logger(), "Skipping cloud without normals.");
-    return;
-  }
-  if (field_nx->datatype != sensor_msgs::msg::PointField::FLOAT32) {
-    RCLCPP_ERROR(nh_->get_logger(),
-                 "Skipping cloud with unsupported normal type %u.",
-                 field_nx->datatype);
-    return;
-  }
-
-  geometry_msgs::msg::PoseStamped start;
-  try {
-    const auto tf =
-        tf_->lookupTransform(cloud->header.frame_id, robot_frame_,
-                             tf2::TimePointZero, tf2::durationFromSec(5.));
-    transform_to_pose(tf, start);
-  } catch (const tf2::TransformException &ex) {
-    RCLCPP_ERROR(nh_->get_logger(), "Could not get robot position: %s.",
-                 ex.what());
-    return;
-  }
-  // TODO: Update whole map with the input map cloud.
 }
 
 void Planner::planning_timer_cb() {
@@ -937,46 +609,10 @@ void Planner::planning_timer_cb() {
               t.seconds_elapsed());
 }
 
-std::vector<Value> Planner::find_robots(const std::string &frame,
-                                        const rclcpp::Time &stamp,
-                                        float timeout) {
-  (void)frame;
-  Timer t;
-  std::vector<Value> robots;
-  robots.reserve(3 * robot_frames_.size());
-  for (const auto &f : robot_frames_) {
-    if (f == robot_frame_) {
-      continue;
-    }
-    const auto timeout_duration = rclcpp::Duration::from_seconds(
-        std::max(timeout - (nh_->get_clock()->now() - stamp).seconds(), 0.));
-    geometry_msgs::msg::TransformStamped tf;
-    try {
-      tf = tf_->lookupTransform(map_frame_, f, stamp, timeout_duration);
-    } catch (const tf2::TransformException &ex) {
-      RCLCPP_WARN(nh_->get_logger(), "Could not get %s pose in %s: %s.",
-                  f.c_str(), map_frame_.c_str(), ex.what());
-      continue;
-    }
-    robots.push_back(static_cast<Value>(tf.transform.translation.x));
-    robots.push_back(static_cast<Value>(tf.transform.translation.y));
-    robots.push_back(static_cast<Value>(tf.transform.translation.z));
-    RCLCPP_INFO(nh_->get_logger(),
-                "Robot %s found in %s at [%.1f, %.1f, %.1f].", f.c_str(),
-                map_frame_.c_str(), tf.transform.translation.x,
-                tf.transform.translation.y, tf.transform.translation.z);
-  }
-  RCLCPP_INFO(nh_->get_logger(),
-              "%lu / %lu robots found in %.3f s (timeout %.3f s).",
-              robots.size() / 3, robot_frames_.size(), t.seconds_elapsed(),
-              double(timeout));
-  return robots;
-}
-
 void Planner::check_initialized() {
   Lock lock(initialized_mutex_);
   if (!initialized_) {
-    throw NotInitialized("Not initialized. Waiting for other robots.");
+    throw NotInitialized("Not initialized yet.");
   }
 }
 
@@ -1070,8 +706,8 @@ void Planner::input_cloud_received(
       std::make_shared<VoxelFilter<float, int>>("x", map_.points_min_dist_),
       std::make_shared<RangeFilter<float>>("x", 1.f, input_range_),
       std::make_shared<ExcludeFramesFilter<float>>(
-          "x", robot_frames_, 1.f, tf_, nh_->get_clock(),
-          rclcpp::Duration::from_seconds(3.0)),
+          "x", std::vector<std::string>{robot_frame_}, 1.f, tf_,
+          nh_->get_clock(), rclcpp::Duration::from_seconds(3.0)),
       std::make_shared<FilterFromProcessor<sensor_msgs::msg::PointCloud2>>(
           std::make_shared<TransformProcessor<float>>(
               "x", map_frame_, tf_, nh_->get_clock(),

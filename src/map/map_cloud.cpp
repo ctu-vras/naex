@@ -39,26 +39,6 @@ void Map::initialize_cloud(sensor_msgs::msg::PointCloud2 &cloud) const {
   append_field<decltype(Point().mean_abs_ground_diff_)>("mean_abs_ground_diff",
                                                         1, cloud);
 
-  cloud.point_step = uint32_t(offsetof(Point, viewpoint_));
-  append_field<decltype(Point().viewpoint_[0])>("viewpoint_x", 1, cloud);
-  append_field<decltype(Point().viewpoint_[0])>("viewpoint_y", 1, cloud);
-  append_field<decltype(Point().viewpoint_[0])>("viewpoint_z", 1, cloud);
-
-  cloud.point_step = uint32_t(offsetof(Point, dist_to_actor_));
-  append_field<decltype(Point().dist_to_actor_)>("dist_to_actor", 1, cloud);
-
-  cloud.point_step = uint32_t(offsetof(Point, actor_last_visit_));
-  append_field<decltype(Point().actor_last_visit_)>("actor_last_visit", 1,
-                                                    cloud);
-
-  cloud.point_step = uint32_t(offsetof(Point, dist_to_other_actors_));
-  append_field<decltype(Point().dist_to_other_actors_)>("dist_to_other_actors",
-                                                        1, cloud);
-
-  cloud.point_step = uint32_t(offsetof(Point, other_actors_last_visit_));
-  append_field<decltype(Point().other_actors_last_visit_)>(
-      "other_actors_last_visit", 1, cloud);
-
   cloud.point_step = uint32_t(offsetof(Point, coverage_));
   append_field<decltype(Point().coverage_)>("coverage", 1, cloud);
 

@@ -49,23 +49,12 @@ public:
   /// FLANN view of the point positions in [start, end).
   FlannMat position_matrix(Index start = 0, Index end = 0);
 
-  /// FLANN view of the neighbor indices of the whole graph.
-  flann::Matrix<int> neighbor_matrix();
-
   Value *position(size_t i) { return &cloud_[i].position_[0]; }
 
   const Value *position(size_t i) const { return &cloud_[i].position_[0]; }
 
-  Value *normal(size_t i) { return &cloud_[i].normal_[0]; }
-
-  const Value *normal(size_t i) const { return &cloud_[i].normal_[0]; }
-
   /// True if the point has been seen through often enough to be removed.
   bool point_empty(const Point &p) const;
-
-  /// True if point @p i is within @p radius of any of the given positions.
-  bool point_near(Index i, const std::vector<Value> &points,
-                  Value radius) const;
 
   inline bool valid_cost(const Value cost) const { return cost > 0; }
 
@@ -81,8 +70,6 @@ public:
 
   /// Rebuild the FLANN index from the current points.
   void update_index();
-
-  std::vector<Index> collect_points_to_update();
 
   template <typename It> void update_neighborhood(It begin, It end) {
     // NB: It should be a stable iteration order.
@@ -264,7 +251,6 @@ public:
     Index n_horizontal = 0;
     Index n_traversable = 0;
     Index n_empty = 0;
-    Index n_actor = 0;
 
     const auto max_slope = std::max(max_pitch_, max_roll_);
     const auto min_z = std::cos(max_slope);
@@ -280,11 +266,6 @@ public:
 
       // Clear flags we may set later.
       cloud_[v0].flags_ &= ~(HORIZONTAL | TRAVERSABLE);
-
-      // Actor flag is temporary and orthogonal to others.
-      if (cloud_[v0].flags_ & ACTOR) {
-        ++n_actor;
-      }
 
       // TODO: Check sign once normals keep consistent orientation.
       if (std::abs(cloud_[v0].normal_[2]) >= min_z) {
@@ -373,28 +354,17 @@ public:
     }
     RCLCPP_DEBUG(map_logger(),
                  "%lu labels updated: %lu horizontal, %lu traversable, "
-                 "%lu empty, %lu actor, (%.3f s).",
+                 "%lu empty (%.3f s).",
                  size_t(n), size_t(n_horizontal), size_t(n_traversable),
-                 size_t(n_empty), size_t(n_actor), t.seconds_elapsed());
+                 size_t(n_empty), t.seconds_elapsed());
   }
 
-  /** Resize point buffers if necessary, update wrappers and index. */
-  void reserve(size_t n);
-
   std::vector<Index> nearby_indices(Value *origin, Value radius);
-
-  /// Update occupancy from an organized cloud using its own neighborhood.
-  void update_occupancy_organized(
-      const sensor_msgs::msg::PointCloud2 &cloud,
-      const geometry_msgs::msg::Transform &cloud_to_map_tf);
 
   /// Update occupancy from an organized cloud using a fitted sensor model.
   void update_occupancy_projection(
       const sensor_msgs::msg::PointCloud2 &cloud,
       const geometry_msgs::msg::Transform &cloud_to_map_tf);
-
-  void update_occupancy_unorganized(const flann::Matrix<Elem> &points,
-                                    const flann::Matrix<Elem> &origin);
 
   void initialize(const flann::Matrix<Elem> &points,
                   const flann::Matrix<Elem> &origin);

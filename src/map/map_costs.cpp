@@ -7,24 +7,12 @@
 #include <cstddef>
 #include <limits>
 #include <rclcpp/rclcpp.hpp>
-#include <vector>
 
 namespace naex {
 
 bool Map::point_empty(const Point &p) const {
   return p.num_empty_ >= min_num_empty_ &&
          Value(p.num_empty_) / p.num_occupied_ >= min_empty_ratio_;
-}
-
-bool Map::point_near(Index i, const std::vector<Value> &points,
-                     Value radius) const {
-  for (size_t j = 0; j + 2 < points.size(); j += 3) {
-    if ((ConstVec3Map(cloud_[i].position_) - ConstVec3Map(&points[j])).norm() <=
-        radius) {
-      return true;
-    }
-  }
-  return false;
 }
 
 Cost Map::compute_edge_cost(const Edge &e) {

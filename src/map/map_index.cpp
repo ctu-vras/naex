@@ -30,15 +30,6 @@ FlannMat Map::position_matrix(Index start, Index end) {
                   sizeof(Point));
 }
 
-flann::Matrix<int> Map::neighbor_matrix() {
-  if (cloud_.empty()) {
-    return flann::Matrix<int>();
-  }
-  return flann::Matrix<int>(reinterpret_cast<int *>(graph_[0].neighbors_),
-                            graph_.size(), Neighborhood::K_NEIGHBORS,
-                            sizeof(Neighborhood));
-}
-
 void Map::update_index() {
   Timer t;
   if (!empty()) {
@@ -52,16 +43,6 @@ void Map::update_index() {
   } else {
     RCLCPP_INFO(map_logger(), "Index not updated due to empty map.");
   }
-}
-
-std::vector<Index> Map::collect_points_to_update() {
-  std::vector<Index> indices;
-  for (Index i = 0; i < Index(cloud_.size()); ++i) {
-    if (!(cloud_[i].flags_ & UPDATED)) {
-      indices.push_back(i);
-    }
-  }
-  return indices;
 }
 
 void Map::update_dirty() {
@@ -89,18 +70,6 @@ void Map::clear_dirty() {
   const auto n = dirty_indices_.size();
   dirty_indices_.clear();
   RCLCPP_DEBUG(map_logger(), "%lu dirty indices cleared.", n);
-}
-
-void Map::reserve(size_t n) {
-  Timer t;
-  if (n < capacity()) {
-    return;
-  }
-  cloud_.reserve(n);
-  graph_.reserve(n);
-  update_index();
-  RCLCPP_INFO(map_logger(), "Capacity increased to %lu points: %.3f s.", n,
-              t.seconds_elapsed());
 }
 
 std::vector<Index> Map::nearby_indices(Value *origin, Value radius) {

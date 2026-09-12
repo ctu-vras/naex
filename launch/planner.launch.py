@@ -14,8 +14,6 @@ from launch_ros.actions import Node
 #   5 deg 0.087   10 0.175   15 0.262   20 0.349   25 0.436
 #  30 deg 0.524   35 0.611   40 0.698   45 0.785
 
-NAN = float("nan")
-
 
 def base_parameters(map_frame, robot_frame):
     return {
@@ -27,30 +25,21 @@ def base_parameters(map_frame, robot_frame):
         "input_range": 15.0,
         "max_pitch": 0.611,
         "max_roll": 0.524,
-        "neighborhood_knn": 32,
         "neighborhood_radius": 0.6,
-        "normal_radius": 0.5,
-        "max_nn_height_diff": 0.15,
         "min_points_obstacle": 1.0,
         "max_ground_diff_std": 0.06,
-        "max_ground_abs_diff_mean": 0.06,
+        "max_mean_abs_ground_diff": 0.06,
         "edge_min_centroid_offset": 0.4,
         "min_dist_to_obstacle": 0.0,
         "viewpoints_update_freq": 1.0,
-        "min_vp_distance": 2.0,
         "max_vp_distance": 6.0,
-        "collect_rewards": True,
         "full_coverage_dist": 3.0,
         "coverage_dist_spread": 1.5,
-        "self_factor": 0.5,
-        "suppress_base_reward": True,
         "path_cost_pow": 0.75,
         "min_path_cost": 1.0,
         "planning_freq": 0.5,
         "random_start": False,
         "plan_from_goal_dist": 1.5,
-        # NaN disables the map bootstrap (a SubT start-area prior).
-        "bootstrap_z": NAN,
         "min_num_empty": 4,
         "min_empty_ratio": 2.0,
         "max_occ_counter": 7,
@@ -80,9 +69,6 @@ def launch_setup(context, *args, **kwargs):
     params["points_min_dist"] = points_min_dist
     # 0.0 turns the node into a mapper (what mapper.launch.py used to be).
     params["planning_freq"] = planning_freq
-    # Positions of these frames are treated as robots when assessing coverage.
-    # A single robot needs no extra frame; the node adds robot_frame itself.
-    params["robot_frames"] = []
     params["use_sim_time"] = use_sim_time
 
     return [
@@ -95,8 +81,6 @@ def launch_setup(context, *args, **kwargs):
             respawn_delay=1.0,
             parameters=[params],
             remappings=[
-                # Don't use map input.
-                ("input_map", "~/input_map"),
                 ("input_cloud_0", points),
             ],
         ),
