@@ -126,6 +126,32 @@ inline bool isValid(const geometry_msgs::msg::Vector3 &p) {
 }
 
 /**
+ * @brief Per-cycle timing breakdown of Planner::plan().
+ *
+ * Filled by plan() and logged once per planning cycle by
+ * Planner::logPlanSummary().  Purely observational: no field is read back by
+ * the planner itself.
+ */
+struct PlanTimings {
+  /// Cells in the grid at the end of the cycle (P6 growth monitor).
+  size_t grid_size{0};
+  /// TF lookup for the start pose (only when the request has no start).
+  double start_tf{0.0};
+  /// Ad-hoc (sidelobes) cost clear + apply.
+  double adhoc{0.0};
+  /// Graph construction + Dijkstra (ShortestPaths construction).
+  double dijkstra{0.0};
+  /// fillMapCloud + publish on the rviz-only "map" topic.
+  double map_cloud{0.0};
+  /// O(N) scan for the nearest traversable cell (only when v0 is blocked).
+  double scan_traversable{0.0};
+  /// O(N) scan for the nearest reachable cell to the goal.
+  double scan_reachable{0.0};
+  /// Wall time of the whole planSafe() call, including the above.
+  double total{0.0};
+};
+
+/**
  * @brief Global planner on 2D grid.
  *
  * It uses multi-level grid from multiple sources.
@@ -346,9 +372,11 @@ public:
     if (!isValid(start.pose.position)) {
       // tf2::TimePointZero ("latest available") avoids the clock-type
       // mismatch of rclcpp::Time(0) (system time) against a ROS-time buffer.
+      Timer t_tf;
       const auto tf = tf_->lookupTransform(map_frame_, robot_frame_,
                                            tf2::TimePointZero,
                                            tf2::durationFromSec(tf_timeout_));
+      plan_timings_.start_tf = t_tf.seconds_elapsed();
       transform_to_pose(tf, start);
     }
 
@@ -376,6 +404,7 @@ public:
                   format(toVec3(grid_.point(v0))).c_str());
       // Fall back to the nearest traversable cell.  This O(N) scan only runs
       // when the robot cell is actually blocked (P9).
+      Timer t_scan;
       const VertexId n = static_cast<VertexId>(grid_.size());
       VertexId v_best = INVALID_VERTEX_ID;
       float best_dist = std::numeric_limits<float>::infinity();
@@ -389,6 +418,7 @@ public:
           best_dist = dist;
         }
       }
+      plan_timings_.scan_traversable = t_scan.seconds_elapsed();
       if (v_best == INVALID_VERTEX_ID) {
         RCLCPP_WARN(nh_->get_logger(),
                     "No traversable cell in the grid; planning from the "
@@ -412,15 +442,23 @@ public:
                               1.0f - 2.0f * (q.y * q.y + q.z * q.z));
       
       applyAdHocCosts(p0, robot_yaw);
+      // Timing is reported by logPlanSummary(); keep only the pose here.
+      plan_timings_.adhoc = t_adhoc.seconds_elapsed();
       RCLCPP_DEBUG(nh_->get_logger(),
-                   "Applied ad-hoc costs at robot position %s, yaw %.3f rad: %.3f s.",
-                   format(p0).c_str(), robot_yaw, t_adhoc.seconds_elapsed());
+                   "Applied ad-hoc costs at robot position %s, yaw %.3f rad.",
+                   format(p0).c_str(), robot_yaw);
     }
 
+    Timer t_dijkstra;
     ShortestPaths sp(grid_, v0, neighborhood_, max_costs_);
+    plan_timings_.dijkstra = t_dijkstra.seconds_elapsed();
+    // Unchanged on purpose: t_part still runs from the top of plan(), so this
+    // line stays comparable with logs recorded before the instrumentation.
     RCLCPP_INFO(nh_->get_logger(), "Dijkstra (%lu pts): %.3f s.", grid_.size(),
                 t_part.seconds_elapsed());
+    Timer t_map;
     createAndPublishMapCloud(sp);
+    plan_timings_.map_cloud = t_map.seconds_elapsed();
 
     // If planning for a given goal, return path to the closest reachable
     // point from the goal.
@@ -429,22 +467,15 @@ public:
       Vec3 p1 = toVec3(req->goal.pose.position);
       p1.z() = 0.f;
 
-      VertexId v1 = INVALID_VERTEX_ID;
-      Value best_dist = std::numeric_limits<Cost>::infinity();
-      const VertexId num_cells = static_cast<VertexId>(grid_.size());
-      // TODO: Use graph vertex iterator.
-      for (VertexId v = 0; v < num_cells; ++v) {
-        if (!std::isfinite(sp.pathCost(v))) {
-          continue;
-        }
-
-        Value dist = (toVec3(grid_.point(v)) - p1).norm();
-        if (dist < best_dist) {
-          v1 = v;
-          best_dist = dist;
-        }
-      }
-      if (v1 == INVALID_VERTEX_ID) {
+      Timer t_scan;
+      // p1.z() is zeroed above, so the 2-D distance used by nearestCell() is
+      // the same value the 3-D norm used to produce.
+      const VertexId v1 =
+          nearestCell(grid_, Point2f(p1.x(), p1.y()), [&sp](CellId v) {
+            return std::isfinite(sp.pathCost(v));
+          });
+      plan_timings_.scan_reachable = t_scan.seconds_elapsed();
+      if (v1 == INVALID_CELL_ID) {
         RCLCPP_ERROR(nh_->get_logger(),
                      "No feasible path towards %s was found (%.6f, %.3f s).",
                      format(p1).c_str(), t_part.seconds_elapsed(),
@@ -503,14 +534,42 @@ public:
     map_pub_->publish(cloud);
   }
 
+  /**
+   * Log the per-phase breakdown of the last planning cycle.
+   *
+   * One line per cycle, throttled to 1 Hz because planning_freq may be higher.
+   * Format (single line):
+   *   perf plan: cells=<N> tf=<s> adhoc=<s> dijkstra=<s> map_cloud=<s>
+   *   scan_trav=<s> scan_reach=<s> total=<s>
+   */
+  void logPlanSummary() const {
+    RCLCPP_INFO_THROTTLE(
+        nh_->get_logger(), *nh_->get_clock(), 1000,
+        "perf plan: cells=%lu tf=%.4f adhoc=%.4f dijkstra=%.4f "
+        "map_cloud=%.4f scan_trav=%.4f scan_reach=%.4f total=%.4f",
+        static_cast<unsigned long>(plan_timings_.grid_size),
+        plan_timings_.start_tf, plan_timings_.adhoc, plan_timings_.dijkstra,
+        plan_timings_.map_cloud, plan_timings_.scan_traversable,
+        plan_timings_.scan_reachable, plan_timings_.total);
+  }
+
   bool planSafe(nav_msgs::srv::GetPlan::Request::SharedPtr req,
                 nav_msgs::srv::GetPlan::Response::SharedPtr res) {
+    // Reset here rather than in plan() so that every exit path of plan(),
+    // including the tf2 exception below, still produces a summary line.
+    plan_timings_ = PlanTimings();
+    Timer t_total;
+    bool ok = false;
     try {
-      return plan(req, res);
+      ok = plan(req, res);
     } catch (const tf2::TransformException &ex) {
       RCLCPP_ERROR(nh_->get_logger(), "Transform failed: %s.", ex.what());
-      return false;
+      ok = false;
     }
+    plan_timings_.total = t_total.seconds_elapsed();
+    plan_timings_.grid_size = grid_.size();
+    logPlanSummary();
+    return ok;
   }
 
   /// Service callback.  nav_msgs/GetPlan has no success field, so a failed
@@ -535,15 +594,10 @@ public:
   }
 
   void clearAdHocLayer() {
-    if (adhoc_layer_ < 0 ||
-        static_cast<size_t>(adhoc_layer_) >= Costs::kSize) {
+    if (!isValidLayer(adhoc_layer_)) {
       return;
     }
-    const Cost default_cost = default_costs_[adhoc_layer_];
-    const VertexId num_cells = static_cast<VertexId>(grid_.size());
-    for (VertexId v = 0; v < num_cells; ++v) {
-      grid_.costs(v)[adhoc_layer_] = default_cost;
-    }
+    fillLayer(grid_, adhoc_layer_, default_costs_[adhoc_layer_]);
   }
 
   void applySidelobesCosts(const Vec3 &robot_pos, float robot_yaw) {
@@ -552,23 +606,14 @@ public:
       return;
     }
 
-    const VertexId num_cells = static_cast<VertexId>(grid_.size());
     for (const auto &angle_offset : sidelobes_angle_offsets_) {
       const float angle_rad = radians(static_cast<float>(angle_offset));
-      const Vec3 center(robot_pos.x() + sidelobes_offset_distance_ *
-                                            std::cos(robot_yaw + angle_rad),
-                        robot_pos.y() + sidelobes_offset_distance_ *
-                                            std::sin(robot_yaw + angle_rad),
-                        0.0f);
-
-      for (VertexId v = 0; v < num_cells; ++v) {
-        const Vec3 cell_pos = toVec3(grid_.point(v));
-        const float dist = (cell_pos - center).norm();
-
-        if (dist <= sidelobes_radius_) {
-          grid_.costs(v)[adhoc_layer_] = sidelobes_cost_;
-        }
-      }
+      const Point2f center(robot_pos.x() + sidelobes_offset_distance_ *
+                                               std::cos(robot_yaw + angle_rad),
+                           robot_pos.y() + sidelobes_offset_distance_ *
+                                               std::sin(robot_yaw + angle_rad));
+      applyDiscCost(grid_, adhoc_layer_, center, sidelobes_radius_,
+                    sidelobes_cost_);
     }
   }
 
@@ -606,10 +651,12 @@ public:
       return;
     }
 
+    Timer t_tf;
     geometry_msgs::msg::TransformStamped cloud_to_map;
     cloud_to_map = tf_->lookupTransform(
         map_frame_, input->header.frame_id, input->header.stamp,
         rclcpp::Duration::from_seconds(tf_timeout_));
+    const double tf_seconds = t_tf.seconds_elapsed();
 
     Eigen::Isometry3f transform(tf2::transformToEigen(cloud_to_map.transform));
     sensor_msgs::PointCloud2ConstIterator<float> x_it(*input, position_field_);
@@ -629,6 +676,7 @@ public:
       }
     }
 
+    Timer t_loop;
     const size_t num_pts = num_points(*input);
     for (size_t pt = 0; pt < num_pts; ++pt, ++x_it) {
       Vec3 p(x_it[0], x_it[1], x_it[2]);
@@ -641,6 +689,12 @@ public:
         ++cost_iters[j];
       }
     }
+    // One line per cloud; see logPlanSummary() for the planning-side line.
+    RCLCPP_DEBUG(nh_->get_logger(),
+                 "perf cloud[%d]: pts=%lu tf=%.4f points=%.4f cells=%lu",
+                 cloud_index, static_cast<unsigned long>(num_pts), tf_seconds,
+                 t_loop.seconds_elapsed(),
+                 static_cast<unsigned long>(grid_.size()));
   }
 
   void receiveCloudSafe(
@@ -780,6 +834,9 @@ protected:
   // Ad-hoc costs
   std::vector<std::string> adhoc_costs_{};
   int adhoc_layer_{3};
+
+  // Instrumentation (see PlanTimings); written by plan()/planSafe() only.
+  PlanTimings plan_timings_{};
 
   // Sidelobes strategy
   float sidelobes_offset_distance_{1.0f};

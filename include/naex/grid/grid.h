@@ -189,5 +189,82 @@ protected:
   std::unordered_map<Cell, CellId, CellHasher> cell_to_id_;
 };
 
+/// Sentinel returned by nearestCell() when no cell was accepted.
+inline constexpr CellId INVALID_CELL_ID = std::numeric_limits<CellId>::max();
+
+/// True if @p layer is a valid index into Costs.
+inline bool isValidLayer(int layer) {
+  return layer >= 0 && static_cast<size_t>(layer) < Costs::kSize;
+}
+
+/**
+ * Set one cost layer of every cell to @p cost.
+ *
+ * Out-of-range layers are ignored.  Kept separate from the planner so that the
+ * ad-hoc layer reset can be unit tested and, later, replaced by a dirty-list
+ * reset (P3) in exactly one place.
+ */
+inline void fillLayer(Grid &grid, int layer, Cost cost) {
+  if (!isValidLayer(layer)) {
+    return;
+  }
+  const CellId n = static_cast<CellId>(grid.size());
+  for (CellId v = 0; v < n; ++v) {
+    grid.costs(v)[static_cast<size_t>(layer)] = cost;
+  }
+}
+
+/**
+ * Set @p cost on @p layer of every existing cell whose centre lies within
+ * @p radius of @p center (2-D Euclidean, boundary inclusive).
+ *
+ * Cells are never created.  Out-of-range layers are ignored.  Currently a full
+ * grid pass; P3 replaces it with a bounding-box iteration, which must select
+ * exactly the same cells (see the SidelobeDisc tests).
+ */
+inline void applyDiscCost(Grid &grid, int layer, const Point2f &center,
+                          float radius, Cost cost) {
+  if (!isValidLayer(layer)) {
+    return;
+  }
+  const CellId n = static_cast<CellId>(grid.size());
+  for (CellId v = 0; v < n; ++v) {
+    const Point2f p = grid.point(v);
+    const float dx = p.x - center.x;
+    const float dy = p.y - center.y;
+    if (std::sqrt(dx * dx + dy * dy) <= radius) {
+      grid.costs(v)[static_cast<size_t>(layer)] = cost;
+    }
+  }
+}
+
+/**
+ * Cell whose centre is nearest to @p p among the cells accepted by
+ * @p accept(CellId), or INVALID_CELL_ID if none is.
+ *
+ * Ties go to the lowest CellId, i.e. to the cell created first, matching the
+ * strict-less argmin loops this replaces in Planner::plan().
+ */
+template <typename Accept>
+CellId nearestCell(const Grid &grid, const Point2f &p, Accept accept) {
+  CellId best = INVALID_CELL_ID;
+  float best_dist = std::numeric_limits<float>::infinity();
+  const CellId n = static_cast<CellId>(grid.size());
+  for (CellId v = 0; v < n; ++v) {
+    if (!accept(v)) {
+      continue;
+    }
+    const Point2f q = grid.point(v);
+    const float dx = q.x - p.x;
+    const float dy = q.y - p.y;
+    const float dist = std::sqrt(dx * dx + dy * dy);
+    if (dist < best_dist) {
+      best = v;
+      best_dist = dist;
+    }
+  }
+  return best;
+}
+
 } // namespace grid
 } // namespace naex

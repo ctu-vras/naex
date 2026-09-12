@@ -207,3 +207,171 @@ TEST(ShortestPaths, AllBlockedIsUnreachable) {
   EXPECT_FLOAT_EQ(sp.pathCost(a), 0.f);
   EXPECT_FALSE(std::isfinite(sp.pathCost(b)));
 }
+
+// --- Regression guards for the performance work ---------------------------
+// The tests below pin behaviour that P2, P3, P8 and P9 must preserve.  They
+// are deliberately written against exact cell sets and exact path costs, not
+// against timings.
+
+namespace {
+
+/// Dense square grid of cells [0, n) x [0, n) with all-zero costs on every
+/// layer (Costs(0.f) alone would leave layers 1..3 NaN), created in x-major
+/// order so that CellIds (and therefore tie-breaking) are stable.
+Grid makeDenseGrid(int16_t n, float cell_size = 1.f) {
+  Grid grid(cell_size, 1.f, Costs(0.f, 0.f, 0.f, 0.f));
+  for (int16_t x = 0; x < n; ++x) {
+    for (int16_t y = 0; y < n; ++y) {
+      grid.cellId(Cell(x, y));
+    }
+  }
+  return grid;
+}
+
+}  // namespace
+
+TEST(AdHocLayer, FillLayerTouchesOnlyThatLayer) {
+  Grid grid = makeDenseGrid(3);
+  naex::grid::fillLayer(grid, 3, 7.f);
+  for (naex::grid::CellId v = 0; v < grid.size(); ++v) {
+    EXPECT_FLOAT_EQ(grid.costs(v)[3], 7.f);
+    EXPECT_FLOAT_EQ(grid.costs(v)[0], 0.f);
+  }
+  // Out-of-range layers are a no-op, not a crash or an out-of-bounds write.
+  naex::grid::fillLayer(grid, -1, 1.f);
+  naex::grid::fillLayer(grid, static_cast<int>(Costs::kSize), 1.f);
+  EXPECT_FLOAT_EQ(grid.costs(0)[3], 7.f);
+}
+
+TEST(SidelobeDisc, UnitGridPlusShapeInclusiveBoundary) {
+  // 5x5 unit cells, centres at (x + 0.5, y + 0.5).  A radius of exactly 1.0
+  // around the centre of cell (2, 2) includes the four edge neighbours (d = 1,
+  // boundary is inclusive) and excludes the diagonals (d = sqrt(2)).
+  Grid grid = makeDenseGrid(5);
+  const size_t size_before = grid.size();
+  naex::grid::applyDiscCost(grid, 3, Point2f(2.5f, 2.5f), 1.0f, 10.f);
+  EXPECT_EQ(grid.size(), size_before) << "no cell may be created";
+
+  const std::set<std::pair<int, int>> expected = {
+      {2, 2}, {1, 2}, {3, 2}, {2, 1}, {2, 3}};
+  std::set<std::pair<int, int>> affected;
+  for (naex::grid::CellId v = 0; v < grid.size(); ++v) {
+    if (grid.costs(v)[3] == 10.f) {
+      affected.insert({grid.cell(v).x, grid.cell(v).y});
+    } else {
+      EXPECT_FLOAT_EQ(grid.costs(v)[3], 0.f);
+    }
+  }
+  EXPECT_EQ(affected, expected);
+}
+
+TEST(SidelobeDisc, ProductionSizedLobeHitsTwelveCells) {
+  // cell_size 0.4 m and sidelobes_radius 0.81 m, i.e. the production sizing.
+  // Cell centres sit at +-0.2, +-0.6, +-1.0 ...; the radius is chosen to fall
+  // between 0.632 (0.6, 0.2) and 0.848 (0.6, 0.6) so that no cell is near the
+  // boundary and the expected set is unambiguous.
+  Grid grid(0.4f, 1.f, Costs(0.f, 0.f, 0.f, 0.f));
+  for (int16_t x = -5; x <= 4; ++x) {
+    for (int16_t y = -5; y <= 4; ++y) {
+      grid.cellId(Cell(x, y));
+    }
+  }
+  const size_t size_before = grid.size();
+  naex::grid::applyDiscCost(grid, 3, Point2f(0.f, 0.f), 0.81f, 10.f);
+  EXPECT_EQ(grid.size(), size_before);
+
+  std::set<std::pair<int, int>> affected;
+  for (naex::grid::CellId v = 0; v < grid.size(); ++v) {
+    if (grid.costs(v)[3] == 10.f) {
+      affected.insert({grid.cell(v).x, grid.cell(v).y});
+    }
+  }
+  const std::set<std::pair<int, int>> expected = {
+      {-1, -1}, {-1, 0}, {0, -1}, {0, 0},    // |cx| = |cy| = 0.2
+      {-2, -1}, {-2, 0}, {1, -1}, {1, 0},    // |cx| = 0.6, |cy| = 0.2
+      {-1, -2}, {0, -2}, {-1, 1}, {0, 1}};   // |cx| = 0.2, |cy| = 0.6
+  EXPECT_EQ(affected.size(), 12u);
+  EXPECT_EQ(affected, expected);
+}
+
+TEST(NearestCell, EmptyPredicateAndTieBreak) {
+  Grid grid = makeDenseGrid(3);
+  EXPECT_EQ(naex::grid::nearestCell(grid, Point2f(0.f, 0.f),
+                                    [](naex::grid::CellId) { return false; }),
+            naex::grid::INVALID_CELL_ID);
+  // Equidistant from the centres of (0, 0) and (1, 0); the lower CellId, i.e.
+  // the cell created first, wins.
+  const naex::grid::CellId v = naex::grid::nearestCell(
+      grid, Point2f(1.0f, 0.5f), [](naex::grid::CellId) { return true; });
+  EXPECT_EQ(grid.cell(v).x, 0);
+  EXPECT_EQ(grid.cell(v).y, 0);
+}
+
+TEST(Planning, TwentyByTwentyWithGapExactCost) {
+  // 20x20 unit cells, free cost 0, wall on column x = 10 for y in [0, 17].
+  // The only way across is the gap at (10, 18) / (10, 19).
+  Grid grid = makeDenseGrid(20);
+  for (int16_t y = 0; y <= 17; ++y) {
+    grid.cellCosts(Cell(10, y))[0] = 5.f;
+  }
+  const Costs max_costs(1.f);
+  const VertexId start = grid.cellId(Cell(0, 0));
+  const VertexId goal = grid.cellId(Cell(19, 0));
+  const ShortestPaths sp(grid, start, 8, max_costs);
+
+  // Every free step costs cell_size * (1 + (0 + 0) / 2) * distance8, so an
+  // optimal route is 19 diagonal and 17 straight steps: through (10, 18)
+  // it is 10*sqrt(2) + 8 to the gap and 9*sqrt(2) + 9 back down.  Going
+  // through (10, 19) instead would cost 19*sqrt(2) + 19.
+  const float expected = 19.f * std::sqrt(2.f) + 17.f;
+  // Dijkstra accumulates 36 float additions, so compare with a tolerance far
+  // below the 2.0 cost difference to the next-best route.
+  EXPECT_NEAR(sp.pathCost(goal), expected, 1e-3f);
+
+  // The wall itself is unreachable and no optimal path enters it.
+  EXPECT_FALSE(std::isfinite(sp.pathCost(grid.cellId(Cell(10, 5)))));
+  size_t vertices = 1;
+  VertexId v = goal;
+  while (v != start && vertices <= grid.size()) {
+    EXPECT_FLOAT_EQ(grid.costs(v)[0], 0.f) << "path entered a blocked cell";
+    v = sp.predecessor(v);
+    ++vertices;
+  }
+  ASSERT_EQ(v, start);
+  // 19 diagonal + 17 straight steps is the only integer solution of
+  // a*sqrt(2) + b = 19*sqrt(2) + 17, so the pose count is exact too.
+  EXPECT_EQ(vertices, 37u);
+}
+
+TEST(Planning, NearestReachableCellWithUnreachableGoal) {
+  // Same grid, but the wall now closes the full height: everything at x > 10
+  // is unreachable, and the goal at (19.5, 0.5) is behind it.
+  Grid grid = makeDenseGrid(20);
+  for (int16_t y = 0; y < 20; ++y) {
+    grid.cellCosts(Cell(10, y))[0] = 5.f;
+  }
+  const VertexId start = grid.cellId(Cell(0, 0));
+  const ShortestPaths sp(grid, start, 8, Costs(1.f));
+  ASSERT_FALSE(std::isfinite(sp.pathCost(grid.cellId(Cell(19, 0)))));
+
+  const naex::grid::CellId v1 =
+      naex::grid::nearestCell(grid, Point2f(19.5f, 0.5f),
+                              [&sp](naex::grid::CellId v) {
+                                return std::isfinite(sp.pathCost(v));
+                              });
+  ASSERT_NE(v1, naex::grid::INVALID_CELL_ID);
+  EXPECT_EQ(grid.cell(v1).x, 9) << "nearest reachable cell to the goal";
+  EXPECT_EQ(grid.cell(v1).y, 0);
+
+  // With nothing reachable the scan must report failure rather than cell 0.
+  Grid blocked = makeDenseGrid(3);
+  for (naex::grid::CellId v = 0; v < blocked.size(); ++v) {
+    blocked.costs(v)[0] = 5.f;
+  }
+  const ShortestPaths none(blocked, 0, 8, Costs(1.f));
+  const naex::grid::CellId unreachable = naex::grid::nearestCell(
+      blocked, Point2f(2.5f, 2.5f), [&none](naex::grid::CellId v) {
+        return v != 0 && std::isfinite(none.pathCost(v));
+      });
+  EXPECT_EQ(unreachable, naex::grid::INVALID_CELL_ID);
+}
