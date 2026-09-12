@@ -1,3 +1,4 @@
+#include "naex/clouds.h"
 #include "naex/timer.h"
 #include "naex/traversability.h"
 #include <geometry_msgs/msg/transform_stamped.hpp>
