@@ -22,6 +22,8 @@ find_package(Eigen3 REQUIRED NO_MODULE)
 
 find_package(geometry_msgs REQUIRED)
 find_package(nav_msgs REQUIRED)
+# ClearEntireCostmap: clear_plan_map keeps the nav2 name/type the robots use.
+find_package(nav2_msgs REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(rclcpp_components REQUIRED)
 find_package(sensor_msgs REQUIRED)
@@ -96,6 +98,7 @@ target_link_libraries(naex_grid
     tf2_ros::tf2_ros
     ${geometry_msgs_TARGETS}
     ${nav_msgs_TARGETS}
+    ${nav2_msgs_TARGETS}
     ${sensor_msgs_TARGETS}
     ${std_msgs_TARGETS}
     ${std_srvs_TARGETS}

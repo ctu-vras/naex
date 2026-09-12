@@ -18,6 +18,7 @@
 #include <geometry_msgs/msg/pose_stamped.hpp>
 #include <limits>
 #include <memory>
+#include <nav2_msgs/srv/clear_entire_costmap.hpp>
 #include <nav_msgs/msg/occupancy_grid.hpp>
 #include <nav_msgs/msg/path.hpp>
 #include <nav_msgs/srv/get_plan.hpp>
@@ -227,10 +228,19 @@ public:
   void request_plan(nav_msgs::srv::GetPlan::Request::SharedPtr req,
                     nav_msgs::srv::GetPlan::Response::SharedPtr res);
 
-  /// Service callback: drop the whole grid.  std_srvs/Trigger, so a caller
-  /// gets the cell count back; it used to be nav2_msgs/ClearEntireCostmap,
-  /// whose empty response said nothing and dragged the whole nav2_msgs
-  /// dependency in for one service type.
+  /// Drop the whole grid; returns the cell count it held before the clear.
+  /// Shared by both service callbacks below.
+  size_t clear_map_impl();
+
+  /// Service callback on clear_plan_map: nav2_msgs/ClearEntireCostmap, the
+  /// name and type upstream and the robots use. Its response carries nothing
+  /// back, unlike clear_map() below.
+  void
+  clear_map_costmap(nav2_msgs::srv::ClearEntireCostmap::Request::SharedPtr,
+                    nav2_msgs::srv::ClearEntireCostmap::Response::SharedPtr);
+
+  /// Service callback on clear_plan_map_trigger: std_srvs/Trigger, so a
+  /// caller gets the cell count back in the response message.
   void clear_map(std_srvs::srv::Trigger::Request::SharedPtr,
                  std_srvs::srv::Trigger::Response::SharedPtr res);
 
@@ -380,6 +390,8 @@ protected:
   rclcpp::Service<nav_msgs::srv::GetPlan>::SharedPtr get_plan_service_;
   nav_msgs::srv::GetPlan::Request::SharedPtr last_request_;
   rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr clear_map_service_;
+  rclcpp::Service<nav2_msgs::srv::ClearEntireCostmap>::SharedPtr
+      clear_map_costmap_service_;
 
   // Input
   std::string position_field_{"x"};

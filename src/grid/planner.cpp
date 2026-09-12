@@ -314,11 +314,19 @@ Planner::Planner(rclcpp::Node::SharedPtr nh) : nh_(nh) {
         this->request_plan(req, res);
       });
   clear_map_service_ = nh_->create_service<std_srvs::srv::Trigger>(
-      "clear_plan_map",
+      "clear_plan_map_trigger",
       [this](const std_srvs::srv::Trigger::Request::SharedPtr req,
              std_srvs::srv::Trigger::Response::SharedPtr res) {
         this->clear_map(req, res);
       });
+  clear_map_costmap_service_ =
+      nh_->create_service<nav2_msgs::srv::ClearEntireCostmap>(
+          "clear_plan_map",
+          [this](
+              const nav2_msgs::srv::ClearEntireCostmap::Request::SharedPtr req,
+              nav2_msgs::srv::ClearEntireCostmap::Response::SharedPtr res) {
+            this->clear_map_costmap(req, res);
+          });
 
   // Configuration trap, found by profiling the P2 build (2026-09-12):
   // map_range evicts the cells that a wider ingestion crop re-creates from
@@ -1059,19 +1067,34 @@ void Planner::request_plan(nav_msgs::srv::GetPlan::Request::SharedPtr req,
   }
 }
 
-void Planner::clear_map(std_srvs::srv::Trigger::Request::SharedPtr,
-                        std_srvs::srv::Trigger::Response::SharedPtr res) {
+size_t Planner::clear_map_impl() {
   const size_t cells = grid_.size();
   grid_.clear();
   // Every CellId is invalidated, so the ad-hoc dirty list cannot be replayed.
   adhoc_dirty_.clear();
-  std::stringstream ss;
-  ss << "map cleared: " << cells << " cells";
+  RCLCPP_WARN(nh_->get_logger(), "Map cleared: %lu cells.",
+              static_cast<unsigned long>(cells));
+  return cells;
+}
+
+void Planner::clear_map(std_srvs::srv::Trigger::Request::SharedPtr,
+                        std_srvs::srv::Trigger::Response::SharedPtr res) {
+  const size_t cells = clear_map_impl();
   if (res) {
     res->success = true;
+    std::stringstream ss;
+    ss << "map cleared: " << cells << " cells";
     res->message = ss.str();
   }
-  RCLCPP_WARN(nh_->get_logger(), "%s.", ss.str().c_str());
+}
+
+void Planner::clear_map_costmap(
+    nav2_msgs::srv::ClearEntireCostmap::Request::SharedPtr,
+    nav2_msgs::srv::ClearEntireCostmap::Response::SharedPtr) {
+  // Empty request and response (that is the whole reason clear_plan_map also
+  // exists as std_srvs::Trigger on clear_plan_map_trigger, see clear_map()):
+  // nothing to fill in, just clear.
+  clear_map_impl();
 }
 
 void Planner::clear_ad_hoc_layer() {

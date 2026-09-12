@@ -263,17 +263,24 @@ time spent in these lookups is the `tf=` field of `perf plan:`.
 #### Services
 
 - `get_plan` [nav_msgs/srv/GetPlan]
-- `clear_plan_map` [[std_srvs/srv/Trigger](https://docs.ros2.org/latest/api/std_srvs/srv/Trigger.html)]
-  — drops the accumulated grid. The response is always `success: true` with
-  `message: "map cleared: N cells"`, N being the cell count before the clear:
+- `clear_plan_map` [[nav2_msgs/srv/ClearEntireCostmap](https://docs.ros2.org/latest/api/nav2_msgs/srv/ClearEntireCostmap.html)]
+  — drops the accumulated grid. Empty request and response (that message type
+  says nothing back); this is the name and type the robots and upstream use:
 
   ```
-  ros2 service call /clear_plan_map std_srvs/srv/Trigger
+  ros2 service call /clear_plan_map nav2_msgs/srv/ClearEntireCostmap
   ```
 
-  It was `nav2_msgs/srv/ClearEntireCostmap` before; that service has an empty
-  request *and* an empty response, so it said nothing back, and it was the only
-  reason the package depended on `nav2_msgs` at all.
+- `clear_plan_map_trigger` [[std_srvs/srv/Trigger](https://docs.ros2.org/latest/api/std_srvs/srv/Trigger.html)]
+  — the same clear, for a caller that wants the cell count back. The response
+  is always `success: true` with `message: "map cleared: N cells"`, N being
+  the cell count before the clear:
+
+  ```
+  ros2 service call /clear_plan_map_trigger std_srvs/srv/Trigger
+  ```
+
+  Both services share one implementation; only the response differs.
 
 ### planner
 
