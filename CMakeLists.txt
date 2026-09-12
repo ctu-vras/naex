@@ -239,6 +239,7 @@ install(PROGRAMS
     scripts/mock_map_publisher.py
     scripts/mock_tf_publisher.py
     scripts/path_follower.py
+    scripts/republish.py
     scripts/test_planner_client.py
   DESTINATION lib/${PROJECT_NAME})
 
