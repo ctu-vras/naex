@@ -20,11 +20,11 @@ public:
     cloud_sub_ = create_subscription<sensor_msgs::msg::PointCloud2>(
         "cloud", 2,
         [this](const std::shared_ptr<const sensor_msgs::msg::PointCloud2>
-                   &msg) { this->cloudReceived(msg); });
+                   &msg) { this->cloud_received(msg); });
     RCLCPP_INFO(get_logger(), "Node initialized.");
   }
 
-  void cloudReceived(
+  void cloud_received(
       const std::shared_ptr<const sensor_msgs::msg::PointCloud2> &msg) {
     Timer t;
     RCLCPP_DEBUG(get_logger(), "Cloud %u-by-%u received.", msg->height,

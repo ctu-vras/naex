@@ -5,7 +5,7 @@ Publishes a synthetic traversability cloud on ``input_cloud_0``, broadcasts the
 map -> robot transform, and calls ``get_plan`` repeatedly with a far goal.  It
 records the client-side round-trip latency of every request and, when it can
 see ``/rosout``, the ``perf plan:`` summary line that
-``naex::grid::Planner::logPlanSummary()`` emits once per planning cycle.
+``naex::grid::Planner::log_plan_summary()`` emits once per planning cycle.
 
 Everything is headless; no display, no rviz, no bag files are needed.
 

@@ -103,7 +103,7 @@ tested as *f* > 1e9 and not with `isfinite` after an A\* run
 | `start_on_request` | bool | true |
 | `stop_on_goal` | bool | true |
 | `goal_reached_dist` | double | NaN |
-| `mode` | int | 2 |
+| `mode` | int | 2 (`naex::grid::PlanningMode`: 2 = plan in the ground plane, i.e. the z of start and goal is zeroed; any other value plans in 3-D) |
 | `adhoc_costs` | string[] | `[]` (e.g. `["sidelobes"]`) |
 | `adhoc_layer` | int | 3 |
 | `sidelobes_offset_distance` | double | 1.0 |

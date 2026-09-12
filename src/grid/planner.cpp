@@ -46,6 +46,26 @@ private:
   double &sink_;
 };
 
+/**
+ * The ad-hoc (sidelobes) costs are drawn around the *robot*, so they are only
+ * applied when the request's start pose really is the robot pose: at most
+ * kAdHocMaxStartOffset metres from the robot frame origin and within
+ * 2 * acos(kAdHocMinStartOrientationW) ~ 51 deg of its orientation.
+ * navigate-through-poses sends start poses that are neither.
+ */
+constexpr double kAdHocMaxStartOffset = 3.;
+constexpr double kAdHocMinStartOrientationW = 0.9;
+
+/// rviz-only marker for the selected frontier component: turquoise points
+/// kFrontierMarkerScale metres wide.  The colour components are the 0-255
+/// values of that turquoise rather than the 0-1 floats the message wants,
+/// which rviz clamps; kept as they are so the marker keeps its look.
+constexpr double kFrontierMarkerScale = 0.2;
+constexpr double kFrontierMarkerColorR = 64.0;
+constexpr double kFrontierMarkerColorG = 224.0;
+constexpr double kFrontierMarkerColorB = 208.0;
+constexpr double kFrontierMarkerAlpha = 1.0;
+
 }  // namespace
 
 Planner::Planner(rclcpp::Node::SharedPtr nh) : nh_(nh) {
@@ -127,13 +147,13 @@ Planner::Planner(rclcpp::Node::SharedPtr nh) : nh_(nh) {
   sensor_data_qos_ =
       nh_->declare_parameter<bool>("sensor_data_qos", sensor_data_qos_);
 
-  // Ad-hoc cost parameters.  Declared before checkInputParameters() because
+  // Ad-hoc cost parameters.  Declared before check_input_parameters() because
   // it rejects a cost field mapped onto the ad-hoc layer (P3's dirty-list
   // clear assumes nothing else writes that layer).
   adhoc_costs_ = nh_->declare_parameter("adhoc_costs", adhoc_costs_);
   adhoc_layer_ = nh_->declare_parameter("adhoc_layer", adhoc_layer_);
 
-  checkInputParameters(num_input_clouds);
+  check_input_parameters(num_input_clouds);
 
   // Defaults: no cost bound and unit cost per input cloud.  Sizing the
   // vectors here (instead of reserving) used to prepend zeros, making every
@@ -157,7 +177,7 @@ Planner::Planner(rclcpp::Node::SharedPtr nh) : nh_(nh) {
   std::vector<float> max_costs_relative(max_costs);
   max_costs_relative_ = nh_->declare_parameter<std::vector<float>>(
       "max_costs_relative", max_costs_relative);
-  updateMaxCostsAbsolute(true);
+  update_max_costs_absolute(true);
 
   default_costs_ = nh_->declare_parameter<std::vector<float>>("default_costs",
                                                               default_costs);
@@ -170,7 +190,10 @@ Planner::Planner(rclcpp::Node::SharedPtr nh) : nh_(nh) {
   stop_on_goal_ = nh_->declare_parameter<bool>("stop_on_goal", stop_on_goal_);
   goal_reached_dist_ =
       nh_->declare_parameter<float>("goal_reached_dist", goal_reached_dist_);
-  mode_ = nh_->declare_parameter<int>("mode", mode_);
+  mode_ = to_planning_mode(
+      nh_->declare_parameter<int>("mode",
+                                  static_cast<int>(kDefaultPlanningMode)),
+      nh_->get_logger());
   max_start_to_traversable_dist_ = nh_->declare_parameter<float>(
       "max_start_to_traversable_dist", max_start_to_traversable_dist_);
 
@@ -189,7 +212,7 @@ Planner::Planner(rclcpp::Node::SharedPtr nh) : nh_(nh) {
                        "Ignoring max_costs_relative update: %s", ex.what());
           return;
         }
-        updateMaxCostsAbsolute(true);
+        update_max_costs_absolute(true);
       });
 
   // A* and frontier goal selection.
@@ -230,10 +253,13 @@ Planner::Planner(rclcpp::Node::SharedPtr nh) : nh_(nh) {
   tf_ = std::make_shared<tf2_ros::Buffer>(nh_->get_clock());
   tf_sub_ = std::make_shared<tf2_ros::TransformListener>(*tf_);
 
-  map_pub_ = nh_->create_publisher<sensor_msgs::msg::PointCloud2>("map", 2);
-  path_pub_ = nh_->create_publisher<nav_msgs::msg::Path>("path", 2);
+  map_pub_ = nh_->create_publisher<sensor_msgs::msg::PointCloud2>(
+      "map", kPublisherQueueDepth);
+  path_pub_ = nh_->create_publisher<nav_msgs::msg::Path>(
+      "path", kPublisherQueueDepth);
   planning_freq_pub_ =
-      nh_->create_publisher<std_msgs::msg::Float32>("planning_freq", 2);
+      nh_->create_publisher<std_msgs::msg::Float32>("planning_freq",
+                                                     kPublisherQueueDepth);
   occ_grid_pub_ = nh_->create_publisher<nav_msgs::msg::OccupancyGrid>(
       "map_occupancy_grid", rclcpp::SystemDefaultsQoS());
   // Debug only.
@@ -252,7 +278,7 @@ Planner::Planner(rclcpp::Node::SharedPtr nh) : nh_(nh) {
                 "initialize the nav2 global_costmap.");
     geometry_msgs::msg::Pose p{};
     p.orientation.w = 1.0;
-    createAndPublishMapOccupancyGrid(p);
+    create_and_publish_map_occupancy_grid(p);
   }
 
   // Reliable by default; flip sensor_data_qos to talk to a best-effort
@@ -273,7 +299,7 @@ Planner::Planner(rclcpp::Node::SharedPtr nh) : nh_(nh) {
             ss.str(), input_qos,
             [this,
              i](const std::shared_ptr<const sensor_msgs::msg::PointCloud2>
-                    &msg) { this->receiveCloudSafe(msg, i); }));
+                    &msg) { this->receive_cloud_safe(msg, i); }));
   }
 
   if (planning_freq_ > 0.f) {
@@ -285,7 +311,7 @@ Planner::Planner(rclcpp::Node::SharedPtr nh) : nh_(nh) {
       RCLCPP_WARN(nh_->get_logger(),
                   "Automatic re-planning will start on request.");
     } else {
-      startPlanning();
+      start_planning();
     }
   } else {
     RCLCPP_INFO(nh_->get_logger(),
@@ -301,13 +327,13 @@ Planner::Planner(rclcpp::Node::SharedPtr nh) : nh_(nh) {
       "get_plan",
       [this](const nav_msgs::srv::GetPlan::Request::SharedPtr req,
              nav_msgs::srv::GetPlan::Response::SharedPtr res) {
-        this->requestPlan(req, res);
+        this->request_plan(req, res);
       });
   clear_map_service_ = nh_->create_service<std_srvs::srv::Trigger>(
       "clear_plan_map",
       [this](const std_srvs::srv::Trigger::Request::SharedPtr req,
              std_srvs::srv::Trigger::Response::SharedPtr res) {
-        this->clearMap(req, res);
+        this->clear_map(req, res);
       });
 
   // Configuration trap, found by profiling the P2 build (2026-09-12):
@@ -348,7 +374,7 @@ Planner::Planner(rclcpp::Node::SharedPtr nh) : nh_(nh) {
                 "(%d cells) from the robot are evicted, at most every %.1f s "
                 "or after %.1f m of travel. A goal outside the bound "
                 "degrades to the nearest reachable cell.",
-                map_range_, cellRadius(grid_, map_range_), evict_period_,
+                map_range_, cell_radius(grid_, map_range_), evict_period_,
                 kEvictMoveFraction * map_range_);
   } else {
     RCLCPP_INFO(nh_->get_logger(),
@@ -360,7 +386,7 @@ Planner::Planner(rclcpp::Node::SharedPtr nh) : nh_(nh) {
   RCLCPP_INFO(nh_->get_logger(), "Node initialized.");
 }
 
-void Planner::startPlanning() {
+void Planner::start_planning() {
   if (!(planning_freq_ > 0.f)) {
     RCLCPP_ERROR(nh_->get_logger(),
                  "Invalid planning frequency (%.3f) specified.",
@@ -369,32 +395,32 @@ void Planner::startPlanning() {
   }
   planning_timer_ = nh_->create_wall_timer(
       std::chrono::duration<double>(1.0 / planning_freq_),
-      [this]() { this->planningTimer(); });
+      [this]() { this->planning_timer(); });
   std_msgs::msg::Float32 msg;
   msg.data = planning_freq_;
   planning_freq_pub_->publish(msg);
   RCLCPP_WARN(nh_->get_logger(), "Planning started.");
 }
 
-nav_msgs::msg::Path Planner::emptyPath() {
+nav_msgs::msg::Path Planner::empty_path() {
   nav_msgs::msg::Path msg;
   msg.header.frame_id = map_frame_;
   msg.header.stamp = nh_->get_clock()->now();
   return msg;
 }
 
-void Planner::stopPlanning() {
+void Planner::stop_planning() {
   if (planning_timer_) {
     planning_timer_->cancel();
   }
-  path_pub_->publish(emptyPath());
+  path_pub_->publish(empty_path());
   std_msgs::msg::Float32 msg;
   msg.data = 0;
   planning_freq_pub_->publish(msg);
   RCLCPP_WARN(nh_->get_logger(), "Planning stopped.");
 }
 
-void Planner::visualizeFrontiers(const std::vector<Point2f> &points) {
+void Planner::visualize_frontiers(const std::vector<Point2f> &points) {
   visualization_msgs::msg::Marker marker;
   marker.header.frame_id = map_frame_;
   marker.header.stamp = nh_->get_clock()->now();
@@ -403,12 +429,12 @@ void Planner::visualizeFrontiers(const std::vector<Point2f> &points) {
   marker.type = visualization_msgs::msg::Marker::POINTS;
   marker.action = visualization_msgs::msg::Marker::ADD;
   marker.pose.orientation.w = 1.0;
-  marker.scale.x = 0.2;
-  marker.scale.y = 0.2;
-  marker.color.r = 64.0;
-  marker.color.g = 224.0;
-  marker.color.b = 208.0;
-  marker.color.a = 1.0;
+  marker.scale.x = kFrontierMarkerScale;
+  marker.scale.y = kFrontierMarkerScale;
+  marker.color.r = kFrontierMarkerColorR;
+  marker.color.g = kFrontierMarkerColorG;
+  marker.color.b = kFrontierMarkerColorB;
+  marker.color.a = kFrontierMarkerAlpha;
   marker.points.reserve(points.size());
   for (const auto &p : points) {
     if (!std::isfinite(p.x) || !std::isfinite(p.y)) {
@@ -425,29 +451,30 @@ void Planner::visualizeFrontiers(const std::vector<Point2f> &points) {
   frontiers_pub_->publish(std::move(array));
 }
 
-VertexId Planner::getCheapestFrontier(const ShortestPaths &sp, VertexId v_start,
-                           const Vec3 &start, const Vec3 &goal,
-                           const Value min_dist, const int max_neighbors) {
+VertexId Planner::get_cheapest_frontier(const ShortestPaths &sp,
+                                        VertexId v_start, const Vec3 &start,
+                                        const Vec3 &goal, const Value min_dist,
+                                        const int max_neighbors) {
   const std::vector<std::uint8_t> &visited = sp.visited();
   const uint8_t nb = static_cast<uint8_t>(neighborhood_);
   const VertexId n = static_cast<VertexId>(grid_.size());
 
   // 1. Collect the frontier cells into a grid of their own.
   //    "traversable" == expanded by the search AND at least min_dist away.
-  Grid frontiers_grid(grid_.cellSize(), 1.f, default_costs_);
+  Grid frontiers_grid(grid_.cell_size(), 1.f, default_costs_);
   std::vector<Cost> frontier_costs;   // indexed by frontiers_grid cell id
   std::vector<std::uint8_t> traversable; // same index
 
   for (VertexId v = 0; v < n; ++v) {
     const bool is_traversable =
-        visited[v] && (toVec3(grid_.point(v)) - start).norm() >= min_dist;
-    const int degree = neighborDegree(grid_, v, nb, [&](CellId t) {
-      return withinRange(grid_, t, v_start, astar_max_range_);
+        visited[v] && (to_vec3(grid_.point(v)) - start).norm() >= min_dist;
+    const int degree = neighbor_degree(grid_, v, nb, [&](CellId t) {
+      return within_range(grid_, t, v_start, astar_max_range_);
     });
     if (degree <= max_neighbors) {
-      frontiers_grid.createCell(
-          frontiers_grid.pointToCell(grid_.point(v)));
-      frontier_costs.push_back(sp.fValue(v));
+      frontiers_grid.create_cell(
+          frontiers_grid.point_to_cell(grid_.point(v)));
+      frontier_costs.push_back(sp.f_value(v));
       traversable.push_back(is_traversable ? 1 : 0);
     }
   }
@@ -489,7 +516,7 @@ VertexId Planner::getCheapestFrontier(const ShortestPaths &sp, VertexId v_start,
       if (!traversable[fv]) {
         continue;
       }
-      const Value d = (toVec3(frontiers_grid.point(fv)) - goal).norm();
+      const Value d = (to_vec3(frontiers_grid.point(fv)) - goal).norm();
       if (d < nearest_dist) {
         nearest_dist = d;
       }
@@ -513,8 +540,8 @@ VertexId Planner::getCheapestFrontier(const ShortestPaths &sp, VertexId v_start,
       continue;
     }
     if (frontier_costs[fv] < cheapest_cost) {
-      const CellId v = grid_.findCell(
-          grid_.pointToCell(frontiers_grid.point(fv)));
+      const CellId v = grid_.find_cell(
+          grid_.point_to_cell(frontiers_grid.point(fv)));
       if (v == INVALID_CELL_ID) {
         continue;
       }
@@ -524,12 +551,12 @@ VertexId Planner::getCheapestFrontier(const ShortestPaths &sp, VertexId v_start,
   }
 
   if (!connected_frontier_points.empty()) {
-    visualizeFrontiers(connected_frontier_points);
+    visualize_frontiers(connected_frontier_points);
   }
 
   if (cheapest_frontier != INVALID_VERTEX_ID) {
     RCLCPP_WARN(nh_->get_logger(), "Cheapest frontier: %s, cost: %f",
-                format(toVec3(grid_.point(cheapest_frontier))).c_str(),
+                format(to_vec3(grid_.point(cheapest_frontier))).c_str(),
                 cheapest_cost);
   } else {
     RCLCPP_WARN(nh_->get_logger(), "No admissible frontier found!");
@@ -537,16 +564,17 @@ VertexId Planner::getCheapestFrontier(const ShortestPaths &sp, VertexId v_start,
   return cheapest_frontier;
 }
 
-std::pair<float, VertexId> Planner::getNearestTraversableVertex(const Vec3 &p0) {
+std::pair<float, VertexId>
+Planner::get_nearest_traversable_vertex(const Vec3 &p0) {
   Timer t_scan;
   float best_dist = std::numeric_limits<float>::infinity();
   VertexId best_v = INVALID_VERTEX_ID;
   const VertexId n = static_cast<VertexId>(grid_.size());
   for (VertexId v = 0; v < n; ++v) {
-    if (!costsInBounds(grid_.costs(v), max_costs_absolute_)) {
+    if (!costs_in_bounds(grid_.costs(v), max_costs_absolute_)) {
       continue;
     }
-    const Value dist = (toVec3(grid_.point(v)) - p0).norm();
+    const Value dist = (to_vec3(grid_.point(v)) - p0).norm();
     if (dist < best_dist) {
       best_v = v;
       best_dist = dist;
@@ -556,16 +584,17 @@ std::pair<float, VertexId> Planner::getNearestTraversableVertex(const Vec3 &p0) 
   if (best_v != INVALID_VERTEX_ID) {
     RCLCPP_INFO(nh_->get_logger(),
                 "Closest traversable point to start: %s (dist %.3f).",
-                format(toVec3(grid_.point(best_v))).c_str(), best_dist);
+                format(to_vec3(grid_.point(best_v))).c_str(), best_dist);
   } else {
     RCLCPP_ERROR(nh_->get_logger(), "No traversable points in graph!");
   }
   return std::make_pair(best_dist, best_v);
 }
 
-void Planner::returnStraightLinePlan(nav_msgs::srv::GetPlan::Response::SharedPtr res,
-                          const geometry_msgs::msg::PoseStamped &start,
-                          const geometry_msgs::msg::PoseStamped &goal) {
+void Planner::return_straight_line_plan(
+    nav_msgs::srv::GetPlan::Response::SharedPtr res,
+    const geometry_msgs::msg::PoseStamped &start,
+    const geometry_msgs::msg::PoseStamped &goal) {
   nav_msgs::msg::Path local_plan;
   local_plan.header.frame_id = map_frame_;
   local_plan.header.stamp = nh_->get_clock()->now();
@@ -575,28 +604,28 @@ void Planner::returnStraightLinePlan(nav_msgs::srv::GetPlan::Response::SharedPtr
   RCLCPP_INFO(nh_->get_logger(), "Planning straight line.");
 }
 
-VertexId Planner::selectStartVertex(const Vec3 &p0, bool &straight_line) {
+VertexId Planner::select_start_vertex(const Vec3 &p0, bool &straight_line) {
   straight_line = false;
-  const Cell start_cell = grid_.pointToCell({p0.x(), p0.y()});
-  const CellId v_start = grid_.findCell(start_cell);
+  const Cell start_cell = grid_.point_to_cell({p0.x(), p0.y()});
+  const CellId v_start = grid_.find_cell(start_cell);
 
   if (v_start != INVALID_CELL_ID &&
-      costsInBounds(grid_.costs(v_start), max_costs_absolute_)) {
+      costs_in_bounds(grid_.costs(v_start), max_costs_absolute_)) {
     // Start cell exists and is traversable: plan from there.
     RCLCPP_INFO(nh_->get_logger(), "Planning from start position %s.",
-                format(toVec3(grid_.point(v_start))).c_str());
+                format(to_vec3(grid_.point(v_start))).c_str());
     return v_start;
   }
   const bool explored = v_start != INVALID_CELL_ID;
   if (explored) {
     RCLCPP_WARN(nh_->get_logger(), "Start position %s is not traversable.",
-                format(toVec3(grid_.point(v_start))).c_str());
+                format(to_vec3(grid_.point(v_start))).c_str());
   } else {
     RCLCPP_WARN(nh_->get_logger(), "Start position %s is unexplored.",
                 format(p0).c_str());
   }
 
-  const auto nearest = getNearestTraversableVertex(p0);
+  const auto nearest = get_nearest_traversable_vertex(p0);
   const float best_dist = nearest.first;
   const VertexId best_v = nearest.second;
   if (best_v == INVALID_VERTEX_ID) {
@@ -605,7 +634,7 @@ VertexId Planner::selectStartVertex(const Vec3 &p0, bool &straight_line) {
   if (best_dist <= max_start_to_traversable_dist_) {
     RCLCPP_INFO(nh_->get_logger(),
                 "Planning from nearest traversable point %s.",
-                format(toVec3(grid_.point(best_v))).c_str());
+                format(to_vec3(grid_.point(best_v))).c_str());
     return best_v;
   }
   if (explored) {
@@ -614,7 +643,7 @@ VertexId Planner::selectStartVertex(const Vec3 &p0, bool &straight_line) {
                  "(%.3f > %.3f m) from the closest traversable point %s. "
                  "Failed to plan!",
                  best_dist, max_start_to_traversable_dist_,
-                 format(toVec3(grid_.point(best_v))).c_str());
+                 format(to_vec3(grid_.point(best_v))).c_str());
     return INVALID_VERTEX_ID;
   }
   RCLCPP_WARN(nh_->get_logger(),
@@ -622,27 +651,27 @@ VertexId Planner::selectStartVertex(const Vec3 &p0, bool &straight_line) {
               "(%.3f > %.3f m) from the closest traversable point %s. "
               "Planning straight line to goal!",
               best_dist, max_start_to_traversable_dist_,
-              format(toVec3(grid_.point(best_v))).c_str());
+              format(to_vec3(grid_.point(best_v))).c_str());
   straight_line = true;
   return INVALID_VERTEX_ID;
 }
 
-VertexId Planner::selectAstarGoalVertex(const ShortestPaths &sp, VertexId v0,
+VertexId Planner::select_astar_goal_vertex(const ShortestPaths &sp, VertexId v0,
                              VertexId v_goal, bool is_goal_explored,
                              const Vec3 &p0, const Vec3 &p1) {
   VertexId v1 = INVALID_VERTEX_ID;
   bool consider_frontier = false;
-  const Value euclidean_dist_to_goal = (toVec3(grid_.point(v0)) - p1).norm();
+  const Value euclidean_dist_to_goal = (to_vec3(grid_.point(v0)) - p1).norm();
   const bool is_goal_in_obstacle =
       is_goal_explored &&
-      !costsInBounds(grid_.costs(v_goal), max_costs_absolute_);
+      !costs_in_bounds(grid_.costs(v_goal), max_costs_absolute_);
 
-  if (sp.foundGoal()) {
+  if (sp.found_goal()) {
     // The goal is reachable.  If the cost-optimal route is much longer than
     // the straight line, a frontier may still be the better target: this is
     // the "drive the whole explored loop backwards" case.
     const Value start_to_goal_dist =
-        sp.cheapestPathEuclideanDist(grid_, v0, v_goal);
+        sp.cheapest_path_euclidean_dist(grid_, v0, v_goal);
     if (start_to_goal_dist >
         max_relative_dist_to_goal_ * euclidean_dist_to_goal) {
       consider_frontier = true;
@@ -661,33 +690,33 @@ VertexId Planner::selectAstarGoalVertex(const ShortestPaths &sp, VertexId v0,
                 "Goal is in obstacle. Choosing nearest reachable point as "
                 "target.");
     Timer t_scan;
-    v1 = nearestCell(grid_, Point2f(p1.x(), p1.y()), [&sp](CellId v) {
+    v1 = nearest_cell(grid_, Point2f(p1.x(), p1.y()), [&sp](CellId v) {
       // Unreached cells carry FLT_MAX (or INF when cropped out); see
       // ShortestPaths::kUnreachableCost.
-      return !(sp.fValue(v) > ShortestPaths::kUnreachableCost);
+      return !(sp.f_value(v) > ShortestPaths::kUnreachableCost);
     });
     plan_timings_.scan_reachable = t_scan.seconds_elapsed();
     if (v1 != INVALID_CELL_ID) {
       RCLCPP_INFO(nh_->get_logger(),
                   "Plan target is nearest reachable point to goal: %s",
-                  format(toVec3(grid_.point(v1))).c_str());
+                  format(to_vec3(grid_.point(v1))).c_str());
     }
   } else {
     // Goal unexplored, hence unreachable: head for the cheapest frontier.
     Timer t_frontier;
-    v1 = getCheapestFrontier(sp, v0, p0, p1, frontier_min_dist_,
-                             frontier_max_neighbors_);
+    v1 = get_cheapest_frontier(sp, v0, p0, p1, frontier_min_dist_,
+                               frontier_max_neighbors_);
     plan_timings_.frontier = t_frontier.seconds_elapsed();
   }
 
   if (consider_frontier) {
     Timer t_frontier;
-    const VertexId v_frontier = getCheapestFrontier(
+    const VertexId v_frontier = get_cheapest_frontier(
         sp, v0, p0, p1, frontier_min_dist_, frontier_max_neighbors_);
     plan_timings_.frontier = t_frontier.seconds_elapsed();
     if (v_frontier != INVALID_VERTEX_ID) {
       const Value frontier_to_goal_dist =
-          (toVec3(grid_.point(v_frontier)) - toVec3(grid_.point(v_goal)))
+          (to_vec3(grid_.point(v_frontier)) - to_vec3(grid_.point(v_goal)))
               .norm();
       if (frontier_to_goal_dist < euclidean_dist_to_goal) {
         RCLCPP_INFO(nh_->get_logger(),
@@ -750,7 +779,8 @@ bool Planner::plan(nav_msgs::srv::GetPlan::Request::SharedPtr req,
   {
     ScopedTfTimer frame_tf_timer(plan_timings_.start_tf);
     if (!request_frame.empty() && request_frame != map_frame_) {
-      RCLCPP_WARN_THROTTLE(nh_->get_logger(), *nh_->get_clock(), 1000,
+      RCLCPP_WARN_THROTTLE(nh_->get_logger(), *nh_->get_clock(),
+                           kFrameWarnThrottleMs,
                            "Start pose frame_id '%s' does not match map "
                            "frame_id '%s'. Attempting to transform.",
                            request_frame.c_str(), map_frame_.c_str());
@@ -758,7 +788,8 @@ bool Planner::plan(nav_msgs::srv::GetPlan::Request::SharedPtr req,
                              tf2::durationFromSec(request_tf_timeout_));
     }
     if (!goal.header.frame_id.empty() && goal.header.frame_id != map_frame_) {
-      RCLCPP_WARN_THROTTLE(nh_->get_logger(), *nh_->get_clock(), 1000,
+      RCLCPP_WARN_THROTTLE(nh_->get_logger(), *nh_->get_clock(),
+                           kFrameWarnThrottleMs,
                            "Goal pose frame_id '%s' does not match map "
                            "frame_id '%s'. Attempting to transform.",
                            goal.header.frame_id.c_str(), map_frame_.c_str());
@@ -769,7 +800,7 @@ bool Planner::plan(nav_msgs::srv::GetPlan::Request::SharedPtr req,
 
   // If the start is not valid, use the robot position instead.
   // TODO: this could be dangerous with navigate-through-poses in theory.
-  if (!isValid(start.pose.position)) {
+  if (!is_valid(start.pose.position)) {
     // tf2::TimePointZero ("latest available") avoids the clock-type
     // mismatch of rclcpp::Time(0) (system time) against a ROS-time buffer.
     geometry_msgs::msg::TransformStamped tf;
@@ -782,20 +813,20 @@ bool Planner::plan(nav_msgs::srv::GetPlan::Request::SharedPtr req,
     start.header.frame_id = map_frame_;
   }
 
-  if (mode_ == 2) {
+  if (mode_ == PlanningMode::kPlanar2d) {
     start.pose.position.z = 0.f;
     goal.pose.position.z = 0.f;
   }
 
-  const Vec3 p0 = toVec3(start.pose.position);
-  Vec3 p1 = toVec3(goal.pose.position);
+  const Vec3 p0 = to_vec3(start.pose.position);
+  Vec3 p1 = to_vec3(goal.pose.position);
 
   if (stop_on_goal_) {
     // Stop if close to the goal.
     const float dist_to_goal = (p1 - p0).norm();
     RCLCPP_INFO(nh_->get_logger(), "Distance to goal: %.3f m.", dist_to_goal);
     if (dist_to_goal <= goal_reached_dist_) {
-      stopPlanning();
+      stop_planning();
       return false;
     }
   }
@@ -805,9 +836,9 @@ bool Planner::plan(nav_msgs::srv::GetPlan::Request::SharedPtr req,
   // ad-hoc layer below is rewritten, so the bounds check is the free
   // function.
   bool straight_line = false;
-  const VertexId v0 = selectStartVertex(p0, straight_line);
+  const VertexId v0 = select_start_vertex(p0, straight_line);
   if (straight_line) {
-    returnStraightLinePlan(res, start, goal);
+    return_straight_line_plan(res, start, goal);
     return true;
   }
   if (v0 == INVALID_VERTEX_ID) {
@@ -817,7 +848,7 @@ bool Planner::plan(nav_msgs::srv::GetPlan::Request::SharedPtr req,
   // Apply ad-hoc costs if enabled.
   if (!adhoc_costs_.empty()) {
     Timer t_adhoc;
-    clearAdHocLayer();
+    clear_ad_hoc_layer();
 
     // Make sure the start pose is close enough to the robot pose (it is not
     // with navigate-through-poses).  Not ideal, but it keeps the ad-hoc
@@ -832,9 +863,12 @@ bool Planner::plan(nav_msgs::srv::GetPlan::Request::SharedPtr req,
           start, robot_frame_, tf2::durationFromSec(request_tf_timeout_));
     }
     const double tf_robot_seconds = plan_timings_.start_tf - start_tf_before;
-    if (std::fabs(start_in_robot_frame.pose.position.x) > 3. ||
-        std::fabs(start_in_robot_frame.pose.position.y) > 3. ||
-        std::fabs(start_in_robot_frame.pose.orientation.w) < 0.9) {
+    if (std::fabs(start_in_robot_frame.pose.position.x) >
+            kAdHocMaxStartOffset ||
+        std::fabs(start_in_robot_frame.pose.position.y) >
+            kAdHocMaxStartOffset ||
+        std::fabs(start_in_robot_frame.pose.orientation.w) <
+            kAdHocMinStartOrientationW) {
       RCLCPP_WARN(nh_->get_logger(),
                   "Start pose in robot frame is not close to the origin: %s, "
                   "orientation w %f. Ad-hoc costs not applied!",
@@ -846,23 +880,23 @@ bool Planner::plan(nav_msgs::srv::GetPlan::Request::SharedPtr req,
       const float robot_yaw =
           std::atan2(2.0f * (q.w * q.z + q.x * q.y),
                      1.0f - 2.0f * (q.y * q.y + q.z * q.z));
-      applyAdHocCosts(p0, robot_yaw);
+      apply_ad_hoc_costs(p0, robot_yaw);
       RCLCPP_DEBUG(nh_->get_logger(),
                    "Applied ad-hoc costs at robot position %s, yaw %.3f rad.",
                    format(p0).c_str(), robot_yaw);
     }
-    // Timing is reported by logPlanSummary().
+    // Timing is reported by log_plan_summary().
     plan_timings_.adhoc = t_adhoc.seconds_elapsed() - tf_robot_seconds;
   }
 
-  if (!isValid(goal.pose.position)) {
+  if (!is_valid(goal.pose.position)) {
     RCLCPP_WARN(nh_->get_logger(), "Goal not valid.");
     // TODO: Return random path in exploration mode.
     return false;
   }
 
   // Is the goal inside the mapped area?  Only then can A* stop on it.
-  const CellId v_goal = grid_.findCell(grid_.pointToCell({p1.x(), p1.y()}));
+  const CellId v_goal = grid_.find_cell(grid_.point_to_cell({p1.x(), p1.y()}));
   const bool is_goal_explored = v_goal != INVALID_CELL_ID;
 
   // Run the search.  Reused across requests (P2): the predecessor, path-cost
@@ -871,9 +905,9 @@ bool Planner::plan(nav_msgs::srv::GetPlan::Request::SharedPtr req,
   Timer t_search;
   ShortestPaths &sp = shortest_paths_;
   if (use_astar_) {
-    sp.computeAstar(nh_->get_logger(), grid_, v0, p1, is_goal_explored,
-                    astar_max_range_, static_cast<uint8_t>(neighborhood_),
-                    max_costs_absolute_);
+    sp.compute_astar(nh_->get_logger(), grid_, v0, p1, is_goal_explored,
+                     astar_max_range_, static_cast<uint8_t>(neighborhood_),
+                     max_costs_absolute_);
   } else {
     sp.compute(grid_, v0, static_cast<uint8_t>(neighborhood_),
                max_costs_absolute_);
@@ -887,22 +921,22 @@ bool Planner::plan(nav_msgs::srv::GetPlan::Request::SharedPtr req,
               t_part.seconds_elapsed());
 
   Timer t_map;
-  createAndPublishMapCloud(sp);
+  create_and_publish_map_cloud(sp);
   plan_timings_.map_cloud = t_map.seconds_elapsed();
 
   // Pick the cell the path ends in.
   t_part.reset();
   VertexId v1 = INVALID_VERTEX_ID;
   if (use_astar_) {
-    v1 = selectAstarGoalVertex(sp, v0, v_goal, is_goal_explored, p0, p1);
+    v1 = select_astar_goal_vertex(sp, v0, v_goal, is_goal_explored, p0, p1);
   } else {
     // Path to the reachable cell closest to the goal.
     p1.z() = 0.f;
     Timer t_scan;
-    // p1.z() is zeroed above, so the 2-D distance used by nearestCell() is
+    // p1.z() is zeroed above, so the 2-D distance used by nearest_cell() is
     // the same value the 3-D norm used to produce.
-    v1 = nearestCell(grid_, Point2f(p1.x(), p1.y()), [&sp](CellId v) {
-      return std::isfinite(sp.pathCost(v));
+    v1 = nearest_cell(grid_, Point2f(p1.x(), p1.y()), [&sp](CellId v) {
+      return std::isfinite(sp.path_cost(v));
     });
     plan_timings_.scan_reachable = t_scan.seconds_elapsed();
   }
@@ -920,12 +954,12 @@ bool Planner::plan(nav_msgs::srv::GetPlan::Request::SharedPtr req,
   RCLCPP_DEBUG(nh_->get_logger(), "v1 %u x %f y %f goal", v1,
                grid_.point(v1).x, grid_.point(v1).y);
 
-  const auto path_vertices = tracePathVertices(v0, v1, sp.predecessors());
+  const auto path_vertices = trace_path_vertices(v0, v1, sp.predecessors());
   nav_msgs::msg::Path local_plan;
   local_plan.header.frame_id = map_frame_;
   local_plan.header.stamp = nh_->get_clock()->now();
   local_plan.poses.push_back(start);
-  appendPath(path_vertices, grid_, local_plan);
+  append_path(path_vertices, grid_, local_plan);
   // helhest 01/2026: add the actual goal point to the end of the path for
   // the goal checker down the path.
   local_plan.poses.push_back(goal);
@@ -938,9 +972,10 @@ bool Planner::plan(nav_msgs::srv::GetPlan::Request::SharedPtr req,
   return true;
 }
 
-void Planner::fillMapCloud(sensor_msgs::msg::PointCloud2 &cloud, const Grid &grid,
-                const std::vector<Cost> &path_costs,
-                const std::vector<Cost> &f_values) {
+void Planner::fill_map_cloud(sensor_msgs::msg::PointCloud2 &cloud,
+                             const Grid &grid,
+                             const std::vector<Cost> &path_costs,
+                             const std::vector<Cost> &f_values) {
   // TODO: Allow sending local map.
   append_field<float>("x", 1, cloud);
   append_field<float>("y", 1, cloud);
@@ -967,32 +1002,35 @@ void Planner::fillMapCloud(sensor_msgs::msg::PointCloud2 &cloud, const Grid &gri
   }
 }
 
-void Planner::createAndPublishMapCloud(const ShortestPaths &sp) {
+void Planner::create_and_publish_map_cloud(const ShortestPaths &sp) {
   if (map_pub_->get_subscription_count() == 0) {
     return;
   }
   auto cloud = std::make_unique<sensor_msgs::msg::PointCloud2>();
   cloud->header.frame_id = map_frame_;
   cloud->header.stamp = nh_->get_clock()->now();
-  fillMapCloud(*cloud, grid_, sp.pathCosts(), sp.fValues());
+  fill_map_cloud(*cloud, grid_, sp.path_costs(), sp.f_values());
   map_pub_->publish(std::move(cloud));
 }
 
-void Planner::fillMapOccupancyGrid(nav_msgs::msg::OccupancyGrid &occ_grid) {
+void Planner::fill_map_occupancy_grid(nav_msgs::msg::OccupancyGrid &occ_grid) {
   occ_grid.data.assign(
-      static_cast<size_t>(occ_grid.info.width) * occ_grid.info.height, -1);
+      static_cast<size_t>(occ_grid.info.width) * occ_grid.info.height,
+      kOccupancyUnknown);
   const VertexId n = static_cast<VertexId>(grid_.size());
   for (VertexId v = 0; v < n; ++v) {
-    const int data_idx = pointToOccupancyGridCell(grid_.point(v), occ_grid);
-    if (data_idx < 0) {
+    const int data_idx = point_to_occupancy_grid_cell(grid_.point(v), occ_grid);
+    if (data_idx == kOutsideOccupancyGrid) {
       continue;
     }
     occ_grid.data[static_cast<size_t>(data_idx)] =
-        costsInBounds(grid_.costs(v), max_costs_absolute_) ? 0 : 127;
+        costs_in_bounds(grid_.costs(v), max_costs_absolute_)
+            ? kOccupancyFree
+            : kOccupancyBlocked;
   }
 }
 
-int Planner::pointToOccupancyGridCell(const Point2f &p,
+int Planner::point_to_occupancy_grid_cell(const Point2f &p,
                            const nav_msgs::msg::OccupancyGrid &occ_grid) {
   const double dx = p.x - occ_grid.info.origin.position.x;
   const double dy = p.y - occ_grid.info.origin.position.y;
@@ -1001,17 +1039,17 @@ int Planner::pointToOccupancyGridCell(const Point2f &p,
   const int64_t cell_y =
       static_cast<int64_t>(std::floor(dy / occ_grid.info.resolution));
   if (cell_x < 0 || cell_x >= static_cast<int64_t>(occ_grid.info.width)) {
-    return -1;
+    return kOutsideOccupancyGrid;
   }
   if (cell_y < 0 || cell_y >= static_cast<int64_t>(occ_grid.info.height)) {
-    return -1;
+    return kOutsideOccupancyGrid;
   }
   return static_cast<int>(cell_x +
                           static_cast<int64_t>(occ_grid.info.width) * cell_y);
 }
 
 geometry_msgs::msg::Point
-Planner::getOccupancyGridOrigin(const geometry_msgs::msg::Pose &robot_pose,
+Planner::get_occupancy_grid_origin(const geometry_msgs::msg::Pose &robot_pose,
                      const nav_msgs::msg::OccupancyGrid &occ_grid) {
   geometry_msgs::msg::Point origin;
   origin.x = robot_pose.position.x -
@@ -1023,26 +1061,27 @@ Planner::getOccupancyGridOrigin(const geometry_msgs::msg::Pose &robot_pose,
   return origin;
 }
 
-void Planner::createAndPublishMapOccupancyGrid(const geometry_msgs::msg::Pose &start) {
+void Planner::create_and_publish_map_occupancy_grid(
+    const geometry_msgs::msg::Pose &start) {
   auto occ_grid = std::make_unique<nav_msgs::msg::OccupancyGrid>();
   occ_grid->header.frame_id = map_frame_;
   const auto now = nh_->get_clock()->now();
   occ_grid->header.stamp = now;
   occ_grid->info.map_load_time = now;
-  occ_grid->info.resolution = grid_.cellSize();
+  occ_grid->info.resolution = grid_.cell_size();
   occ_grid->info.width = static_cast<uint32_t>(std::max(0, occupancy_grid_w_));
   occ_grid->info.height =
       static_cast<uint32_t>(std::max(0, occupancy_grid_h_));
   // Assume the start pose of the request is the robot's current pose.
-  occ_grid->info.origin.position = getOccupancyGridOrigin(start, *occ_grid);
+  occ_grid->info.origin.position = get_occupancy_grid_origin(start, *occ_grid);
   occ_grid->info.origin.orientation.w = 1.0;
-  fillMapOccupancyGrid(*occ_grid);
+  fill_map_occupancy_grid(*occ_grid);
   occ_grid_pub_->publish(std::move(occ_grid));
 }
 
-void Planner::logPlanSummary() const {
+void Planner::log_plan_summary() const {
   RCLCPP_INFO_THROTTLE(
-      nh_->get_logger(), *nh_->get_clock(), 1000,
+      nh_->get_logger(), *nh_->get_clock(), kPerfLogThrottleMs,
       "perf plan: cells=%lu map_range=%.1f astar=%d tf=%.4f adhoc=%.4f "
       "dijkstra=%.4f map_cloud=%.4f scan_trav=%.4f scan_reach=%.4f "
       "frontier=%.4f total=%.4f",
@@ -1053,7 +1092,7 @@ void Planner::logPlanSummary() const {
       plan_timings_.frontier, plan_timings_.total);
 }
 
-bool Planner::planSafe(nav_msgs::srv::GetPlan::Request::SharedPtr req,
+bool Planner::plan_safe(nav_msgs::srv::GetPlan::Request::SharedPtr req,
             nav_msgs::srv::GetPlan::Response::SharedPtr res) {
   // Reset here rather than in plan() so that every exit path of plan(),
   // including the tf2 exception below, still produces a summary line.
@@ -1068,24 +1107,24 @@ bool Planner::planSafe(nav_msgs::srv::GetPlan::Request::SharedPtr req,
   }
   plan_timings_.total = t_total.seconds_elapsed();
   plan_timings_.grid_size = grid_.size();
-  logPlanSummary();
+  log_plan_summary();
   return ok;
 }
 
-void Planner::requestPlan(nav_msgs::srv::GetPlan::Request::SharedPtr req,
+void Planner::request_plan(nav_msgs::srv::GetPlan::Request::SharedPtr req,
                nav_msgs::srv::GetPlan::Response::SharedPtr res) {
   RCLCPP_INFO(nh_->get_logger(), "Planning request received.");
   if (start_on_request_) {
-    startPlanning();
+    start_planning();
   }
-  if (!planSafe(req, res)) {
+  if (!plan_safe(req, res)) {
     RCLCPP_WARN(nh_->get_logger(),
                 "Planning failed; returning an empty plan.");
-    res->plan = emptyPath();
+    res->plan = empty_path();
   }
 }
 
-void Planner::clearMap(std_srvs::srv::Trigger::Request::SharedPtr,
+void Planner::clear_map(std_srvs::srv::Trigger::Request::SharedPtr,
             std_srvs::srv::Trigger::Response::SharedPtr res) {
   const size_t cells = grid_.size();
   grid_.clear();
@@ -1100,8 +1139,8 @@ void Planner::clearMap(std_srvs::srv::Trigger::Request::SharedPtr,
   RCLCPP_WARN(nh_->get_logger(), "%s.", ss.str().c_str());
 }
 
-void Planner::clearAdHocLayer() {
-  if (!isValidLayer(adhoc_layer_)) {
+void Planner::clear_ad_hoc_layer() {
+  if (!is_valid_layer(adhoc_layer_)) {
     adhoc_dirty_.clear();
     return;
   }
@@ -1112,7 +1151,7 @@ void Planner::clearAdHocLayer() {
   adhoc_dirty_.clear();
 }
 
-void Planner::applySidelobesCosts(const Vec3 &robot_pos, float robot_yaw) {
+void Planner::apply_sidelobes_costs(const Vec3 &robot_pos, float robot_yaw) {
   if (adhoc_layer_ < 0 ||
       static_cast<size_t>(adhoc_layer_) >= Costs::kSize) {
     return;
@@ -1124,25 +1163,25 @@ void Planner::applySidelobesCosts(const Vec3 &robot_pos, float robot_yaw) {
                                              std::cos(robot_yaw + angle_rad),
                          robot_pos.y() + sidelobes_offset_distance_ *
                                              std::sin(robot_yaw + angle_rad));
-    applyDiscCost(grid_, adhoc_layer_, center, sidelobes_radius_,
-                  sidelobes_cost_, &adhoc_dirty_);
+    apply_disc_cost(grid_, adhoc_layer_, center, sidelobes_radius_,
+                    sidelobes_cost_, &adhoc_dirty_);
   }
 }
 
-void Planner::applyAdHocCosts(const Vec3 &robot_pos, float robot_yaw) {
+void Planner::apply_ad_hoc_costs(const Vec3 &robot_pos, float robot_yaw) {
   for (const auto &strategy : adhoc_costs_) {
     if (strategy == "sidelobes") {
-      applySidelobesCosts(robot_pos, robot_yaw);
+      apply_sidelobes_costs(robot_pos, robot_yaw);
     }
   }
 }
 
-void Planner::planningTimer() {
+void Planner::planning_timer() {
   RCLCPP_INFO(nh_->get_logger(), "Planning timer callback.");
   Timer t;
   auto req = last_request_;
   auto res = std::make_shared<nav_msgs::srv::GetPlan::Response>();
-  if (!planSafe(req, res)) {
+  if (!plan_safe(req, res)) {
     return;
   }
   // Move the path out instead of copying it into the publisher (P4); the
@@ -1156,7 +1195,7 @@ void Planner::planningTimer() {
               map_frame_.c_str(), t.seconds_elapsed());
 }
 
-void Planner::receiveCloud(
+void Planner::receive_cloud(
   const std::shared_ptr<const sensor_msgs::msg::PointCloud2> &input,
   int cloud_index) {
   const auto age = (nh_->get_clock()->now() - input->header.stamp).seconds();
@@ -1212,23 +1251,23 @@ void Planner::receiveCloud(
   // One-entry "last cell" cache.  A cloud is spatially coherent, so a run of
   // consecutive points usually falls into the same cell; resolving that cell
   // once turns the per-point (and, with several cost fields, per-field) hash
-  // lookup into an int16 pair comparison.  Grid::cellId() is 20 % of the
-  // process at the 216 k-cell operating point, all of it under receiveCloud.
+  // lookup into an int16 pair comparison.  Grid::cell_id() is 20 % of the
+  // process at the 216 k-cell operating point, all of it under receive_cloud.
   // Kept valid for the whole loop because nothing here erases cells: the
   // eviction runs after it.
   Cell last_cell{};
   CellId last_id = INVALID_CELL_ID;
   for (size_t pt = 0; pt < num_pts; ++pt, ++x_it) {
-    // Non-finite input must be rejected before the cast in pointToCell()
+    // Non-finite input must be rejected before the cast in point_to_cell()
     // (undefined behaviour, phantom cells), and the crop keeps the per-cloud
     // work bounded by input_range instead of by the size of the cloud (P6a).
     const Vec3 raw(x_it[0], x_it[1], x_it[2]);
-    bool keep = isValid(raw);
+    bool keep = is_valid(raw);
     Point2f p(0.f, 0.f);
     if (keep) {
       const Vec3 q = transform * raw;
       p = Point2f(q.x(), q.y());
-      keep = acceptInputPoint(grid_, p, origin, effective_input_range_);
+      keep = accept_input_point(grid_, p, origin, effective_input_range_);
     }
     if (!keep) {
       ++skipped;
@@ -1245,14 +1284,14 @@ void Planner::receiveCloud(
     for (size_t j = 0; j < levels.size(); ++j) {
       if (std::isfinite(cost_iters[j][0])) {
         if (!resolved) {
-          const Cell c = grid_.pointToCell(p);
+          const Cell c = grid_.point_to_cell(p);
           if (last_id == INVALID_CELL_ID || !(c == last_cell)) {
             last_cell = c;
-            last_id = grid_.cellId(c);
+            last_id = grid_.cell_id(c);
           }
           resolved = true;
         }
-        grid_.updateCostAt(last_id, levels[j], weights[j] * cost_iters[j][0]);
+        grid_.update_cost_at(last_id, levels[j], weights[j] * cost_iters[j][0]);
       }
       ++cost_iters[j];
     }
@@ -1260,8 +1299,8 @@ void Planner::receiveCloud(
   const double loop_seconds = t_loop.seconds_elapsed();
 
   Timer t_evict;
-  const bool evicted = maybeEvictCells(origin);
-  // One line per cloud; see logPlanSummary() for the planning-side line.
+  const bool evicted = maybe_evict_cells(origin);
+  // One line per cloud; see log_plan_summary() for the planning-side line.
   RCLCPP_DEBUG(nh_->get_logger(),
                "perf cloud[%d]: pts=%lu skipped=%lu tf=%.4f points=%.4f "
                "evict=%.4f cells=%lu",
@@ -1280,16 +1319,17 @@ void Planner::receiveCloud(
         map_frame_, robot_frame_, tf2::TimePointZero,
         tf2::durationFromSec(cloud_tf_timeout_));
     transform_to_pose(robot_to_map, robot_pose);
-    createAndPublishMapOccupancyGrid(robot_pose.pose);
+    create_and_publish_map_occupancy_grid(robot_pose.pose);
   }
 }
 
-bool Planner::maybeEvictCells(const Point2f &robot) {
+bool Planner::maybe_evict_cells(const Point2f &robot) {
   if (!(map_range_ > 0.f) || grid_.empty()) {
     return false;
   }
-  if (!inCellRange(grid_, robot)) {
-    RCLCPP_WARN_THROTTLE(nh_->get_logger(), *nh_->get_clock(), 5000,
+  if (!in_cell_range(grid_, robot)) {
+    RCLCPP_WARN_THROTTLE(nh_->get_logger(), *nh_->get_clock(),
+                         kEvictWarnThrottleMs,
                          "Not evicting: robot position (%.1f, %.1f) is not a "
                          "valid grid cell.",
                          robot.x, robot.y);
@@ -1307,18 +1347,19 @@ bool Planner::maybeEvictCells(const Point2f &robot) {
   const bool due = !(now - last_evict_time_ < evict_period_);
   const bool grown =
       static_cast<double>(grid_.size()) >
-      kEvictSizeFactor * boundedCellCount(cellRadius(grid_, map_range_));
+      kEvictSizeFactor * bounded_cell_count(cell_radius(grid_, map_range_));
   if (!moved && !due && !grown) {
     return false;
   }
 
   // The dirty list holds CellIds; replay it while they still mean something.
-  clearAdHocLayer();
-  const Eviction ev = evictOutsideRange(grid_, robot, map_range_);
+  clear_ad_hoc_layer();
+  const Eviction ev = evict_outside_range(grid_, robot, map_range_);
   last_evict_at_ = robot;
   last_evict_time_ = now;
   if (ev.changed()) {
-    RCLCPP_INFO_THROTTLE(nh_->get_logger(), *nh_->get_clock(), 1000,
+    RCLCPP_INFO_THROTTLE(nh_->get_logger(), *nh_->get_clock(),
+                         kPerfLogThrottleMs,
                          "perf evict: map_range=%.1f center=(%.1f, %.1f) "
                          "cells_before=%lu cells_after=%lu removed=%lu",
                          map_range_, robot.x, robot.y,
@@ -1329,16 +1370,17 @@ bool Planner::maybeEvictCells(const Point2f &robot) {
   return true;
 }
 
-void Planner::receiveCloudSafe(
+void Planner::receive_cloud_safe(
   const std::shared_ptr<const sensor_msgs::msg::PointCloud2> &input,
   int cloud_index) {
   try {
-    receiveCloud(input, cloud_index);
+    receive_cloud(input, cloud_index);
   } catch (const tf2::TransformException &ex) {
     // Expected whenever TF is late: the frame is dropped rather than waited
     // for (P5).  Throttled so a persistent TF outage stays visible without
     // flooding the log at the cloud rate.
-    RCLCPP_WARN_THROTTLE(nh_->get_logger(), *nh_->get_clock(), 2000,
+    RCLCPP_WARN_THROTTLE(nh_->get_logger(), *nh_->get_clock(),
+                         kTfDropWarnThrottleMs,
                          "Dropping input cloud from %s: no transform to %s "
                          "within %.3f s: %s.",
                          input->header.frame_id.c_str(), map_frame_.c_str(),
@@ -1353,7 +1395,7 @@ void Planner::receiveCloudSafe(
   }
 }
 
-void Planner::updateMaxCostsAbsolute(bool log) {
+void Planner::update_max_costs_absolute(bool log) {
   max_costs_absolute_ = max_costs_;
   for (size_t i = 0; i < Costs::kSize; ++i) {
     if (!std::isfinite(max_costs_relative_[i]) ||
@@ -1374,7 +1416,7 @@ void Planner::updateMaxCostsAbsolute(bool log) {
   }
 }
 
-void Planner::checkInputParameters(int num_input_clouds) {
+void Planner::check_input_parameters(int num_input_clouds) {
   const size_t n = cost_fields_.size();
   const auto check = [&](const char *name, size_t size) {
     if (size != n) {
@@ -1425,7 +1467,7 @@ void Planner::checkInputParameters(int num_input_clouds) {
          << " is out of range [0, " << Costs::kSize << ").";
       throw std::runtime_error(ss.str());
     }
-    // P3: clearAdHocLayer() restores only the cells the last apply touched,
+    // P3: clear_ad_hoc_layer() restores only the cells the last apply touched,
     // which is equivalent to a full sweep only if no other writer touches
     // that layer.
     if (!adhoc_costs_.empty() &&

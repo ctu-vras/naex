@@ -8,9 +8,9 @@
 namespace naex {
 namespace grid {
 
-void tracePathVertices(VertexId v0, VertexId v1,
-                       const std::vector<VertexId> &predecessor,
-                       std::vector<VertexId> &path_vertices) {
+void trace_path_vertices(VertexId v0, VertexId v1,
+                         const std::vector<VertexId> &predecessor,
+                         std::vector<VertexId> &path_vertices) {
   assert(predecessor[v0] == v0);
   VertexId v = v1;
   while (v != v0) {
@@ -22,15 +22,15 @@ void tracePathVertices(VertexId v0, VertexId v1,
 }
 
 std::vector<VertexId>
-tracePathVertices(VertexId v0, VertexId v1,
-                  const std::vector<VertexId> &predecessor) {
+trace_path_vertices(VertexId v0, VertexId v1,
+                    const std::vector<VertexId> &predecessor) {
   std::vector<VertexId> path_vertices;
-  tracePathVertices(v0, v1, predecessor, path_vertices);
+  trace_path_vertices(v0, v1, predecessor, path_vertices);
   return path_vertices;
 }
 
-void appendPath(const std::vector<VertexId> &path_vertices, const Grid &grid,
-                nav_msgs::msg::Path &path) {
+void append_path(const std::vector<VertexId> &path_vertices, const Grid &grid,
+                 nav_msgs::msg::Path &path) {
   if (path_vertices.empty()) {
     return;
   }

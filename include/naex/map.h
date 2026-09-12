@@ -4,6 +4,7 @@
 // The templates and the hot graph accessors stay in the header; the remaining
 // Map member functions are defined under src/map/ (library naex_core).
 #include <naex/flann.h>
+#include <naex/geom.h>
 #include <naex/iterators.h>
 #include <naex/nearest_neighbors.h>
 #include <naex/timer.h>
@@ -478,8 +479,10 @@ public:
   float max_ground_diff_std_{0.1};
   float max_mean_abs_ground_diff_{0.1};
   float min_dist_to_obstacle_{clearance_radius_};
-  float max_pitch_{float(30. / 180. * M_PI)};
-  float max_roll_{float(30. / 180. * M_PI)};
+  /// Max traversable slope, in radians; radians<double>() so that the value
+  /// is the same double expression (30 / 180 * pi) it has always been.
+  float max_pitch_{float(radians(30.))};
+  float max_roll_{float(radians(30.))};
   float inclination_penalty_{1.0};
 };
 

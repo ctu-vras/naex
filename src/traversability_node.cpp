@@ -25,13 +25,13 @@ public:
   explicit TraversabilityNode(
       const rclcpp::NodeOptions &options = rclcpp::NodeOptions())
       : rclcpp::Node("traversability", options) {
-    updateParams();
+    update_params();
     advertise();
     subscribe();
     RCLCPP_INFO(get_logger(), "Node initialized.");
   }
 
-  void updateParams() {
+  void update_params() {
     proc_.min_z_ = declare_parameter<float>("min_z", proc_.min_z_);
     proc_.max_z_ = declare_parameter<float>("max_z", proc_.max_z_);
     proc_.support_radius_ =
@@ -95,11 +95,11 @@ public:
     cloud_sub_ = create_subscription<sensor_msgs::msg::PointCloud2>(
         "input", 2,
         [this](const std::shared_ptr<const sensor_msgs::msg::PointCloud2>
-                   &msg) { this->onCloud(msg); });
+                   &msg) { this->on_cloud(msg); });
   }
 
   void
-  onCloud(const std::shared_ptr<const sensor_msgs::msg::PointCloud2> &msg) {
+  on_cloud(const std::shared_ptr<const sensor_msgs::msg::PointCloud2> &msg) {
     Timer t;
     geometry_msgs::msg::TransformStamped tf;
     tf.transform.rotation.w = 1.0;

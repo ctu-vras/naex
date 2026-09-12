@@ -4,9 +4,9 @@
  * @file
  * Declaration of naex::grid::Planner; the member bodies are in
  * src/grid/planner.cpp.  The free helpers that used to live here moved to
- * naex/grid/conversions.h (format/toVec3/isValid) and naex/grid/path.h
- * (tracePathVertices/appendPath), so that mule_planner.h can use them without
- * pulling the whole planner in.
+ * naex/grid/conversions.h (format/to_vec3/is_valid) and naex/grid/path.h
+ * (trace_path_vertices/append_path), so that mule_planner.h can use them
+ * without pulling the whole planner in.
  */
 
 #include "naex/grid/graph.h"
@@ -36,10 +36,83 @@ namespace naex {
 namespace grid {
 
 /**
+ * Values of the integer `mode` parameter of the planner.
+ *
+ * The parameter stays an int and keeps its values, so every launch file that
+ * passes `mode: 2` is unaffected; only the comparison in plan() is named.
+ */
+enum class PlanningMode : int {
+  /// Plan in 3-D: the z of the start and goal poses is used as received.
+  kSpatial3d = 0,
+  /// Plan in the ground plane: the z of the start and goal poses is zeroed.
+  kPlanar2d = 2,
+};
+
+/// Default of the `mode` parameter, i.e. what every launch file passes.
+inline constexpr PlanningMode kDefaultPlanningMode = PlanningMode::kPlanar2d;
+
+/**
+ * Map a `mode` parameter value onto PlanningMode.
+ *
+ * An unrecognized value keeps the historical behaviour -- only mode 2 ever
+ * zeroed the z of the request -- and is warned about once, at construction.
+ */
+inline PlanningMode to_planning_mode(int mode, const rclcpp::Logger &log) {
+  switch (mode) {
+  case static_cast<int>(PlanningMode::kSpatial3d):
+    return PlanningMode::kSpatial3d;
+  case static_cast<int>(PlanningMode::kPlanar2d):
+    return PlanningMode::kPlanar2d;
+  default:
+    RCLCPP_WARN(log,
+                "Unknown mode %d; planning in 3-D, i.e. as mode %d, which is "
+                "what every value but %d has always done.",
+                mode, static_cast<int>(PlanningMode::kSpatial3d),
+                static_cast<int>(PlanningMode::kPlanar2d));
+    return PlanningMode::kSpatial3d;
+  }
+}
+
+/**
+ * nav_msgs/OccupancyGrid cell values the planner writes.
+ *
+ * The message encodes occupancy as 0..100 plus -1 for "unknown".  127 is out
+ * of that range on purpose and is what this planner has always published for a
+ * cell whose costs are out of bounds; the nav2 global costmap reads anything
+ * at or above its lethal threshold the same way.
+ */
+inline constexpr int8_t kOccupancyUnknown = -1;
+/// Cell whose costs are within max_costs.
+inline constexpr int8_t kOccupancyFree = 0;
+/// Cell whose costs are out of bounds; see kOccupancyUnknown.
+inline constexpr int8_t kOccupancyBlocked = 127;
+/// Return of Planner::point_to_occupancy_grid_cell() for a point outside the
+/// published grid.
+inline constexpr int kOutsideOccupancyGrid = -1;
+
+/**
+ * Depth of the planner's own publisher queues (map cloud, path, planning
+ * frequency).  The input-cloud depth is the `input_queue_size` parameter.
+ */
+inline constexpr size_t kPublisherQueueDepth = 2;
+
+/// Throttle period (ms) of the once-per-cycle "perf" lines; planning_freq may
+/// be higher than 1 Hz.
+inline constexpr int kPerfLogThrottleMs = 1000;
+/// Throttle period (ms) of the request-frame mismatch warnings, which repeat
+/// at the request rate.
+inline constexpr int kFrameWarnThrottleMs = 1000;
+/// Throttle period (ms) of the dropped-cloud warning, which would otherwise
+/// repeat at the cloud rate for the whole TF outage.
+inline constexpr int kTfDropWarnThrottleMs = 2000;
+/// Throttle period (ms) of the "robot is not a valid cell" eviction warning.
+inline constexpr int kEvictWarnThrottleMs = 5000;
+
+/**
  * @brief Per-cycle timing breakdown of Planner::plan().
  *
  * Filled by plan() and logged once per planning cycle by
- * Planner::logPlanSummary().  Purely observational: no field is read back by
+ * Planner::log_plan_summary().  Purely observational: no field is read back by
  * the planner itself.
  */
 struct PlanTimings {
@@ -54,7 +127,7 @@ struct PlanTimings {
   double adhoc{0.0};
   /// Graph construction + Dijkstra (ShortestPaths construction).
   double dijkstra{0.0};
-  /// fillMapCloud + publish on the rviz-only "map" topic.
+  /// fill_map_cloud + publish on the rviz-only "map" topic.
   double map_cloud{0.0};
   /// O(N) scan for the nearest traversable cell (only when v0 is blocked).
   double scan_traversable{0.0};
@@ -62,7 +135,7 @@ struct PlanTimings {
   double scan_reachable{0.0};
   /// Frontier detection and component search (A* only).
   double frontier{0.0};
-  /// Wall time of the whole planSafe() call, including the above.
+  /// Wall time of the whole plan_safe() call, including the above.
   double total{0.0};
 };
 
@@ -77,14 +150,14 @@ class Planner {
 public:
   Planner(rclcpp::Node::SharedPtr nh);
 
-  void startPlanning();
+  void start_planning();
 
-  nav_msgs::msg::Path emptyPath();
+  nav_msgs::msg::Path empty_path();
 
-  void stopPlanning();
+  void stop_planning();
 
   /// Visualize the connected frontier component the goal selection picked.
-  void visualizeFrontiers(const std::vector<Point2f> &points);
+  void visualize_frontiers(const std::vector<Point2f> &points);
 
   /**
    * Cheapest reachable frontier cell of the frontier component that comes
@@ -101,21 +174,22 @@ public:
    * the same (an absent neighbour was the self-edge the old loop skipped) and
    * the range predicate is the one the A* filter used.
    */
-  VertexId getCheapestFrontier(const ShortestPaths &sp, VertexId v_start,
-                               const Vec3 &start, const Vec3 &goal,
-                               const Value min_dist, const int max_neighbors);
+  VertexId get_cheapest_frontier(const ShortestPaths &sp, VertexId v_start,
+                                 const Vec3 &start, const Vec3 &goal,
+                                 const Value min_dist, const int max_neighbors);
 
   /**
    * Nearest cell to @p p0 whose costs are in bounds, and its distance.
    *
    * The O(N) scan only runs when the robot cell is blocked or unexplored (P9).
    */
-  std::pair<float, VertexId> getNearestTraversableVertex(const Vec3 &p0);
+  std::pair<float, VertexId> get_nearest_traversable_vertex(const Vec3 &p0);
 
   /// Fall-back plan when the start is nowhere near anything traversable.
-  void returnStraightLinePlan(nav_msgs::srv::GetPlan::Response::SharedPtr res,
-                              const geometry_msgs::msg::PoseStamped &start,
-                              const geometry_msgs::msg::PoseStamped &goal);
+  void
+  return_straight_line_plan(nav_msgs::srv::GetPlan::Response::SharedPtr res,
+                            const geometry_msgs::msg::PoseStamped &start,
+                            const geometry_msgs::msg::PoseStamped &goal);
 
   /**
    * Start cell of the search.
@@ -124,19 +198,19 @@ public:
    *        straight line to the goal instead of planning.
    * @return the start cell, or INVALID_VERTEX_ID when planning must fail.
    */
-  VertexId selectStartVertex(const Vec3 &p0, bool &straight_line);
+  VertexId select_start_vertex(const Vec3 &p0, bool &straight_line);
 
   /// Goal cell for an A* search, or INVALID_VERTEX_ID when there is none.
-  VertexId selectAstarGoalVertex(const ShortestPaths &sp, VertexId v0,
-                                 VertexId v_goal, bool is_goal_explored,
-                                 const Vec3 &p0, const Vec3 &p1);
+  VertexId select_astar_goal_vertex(const ShortestPaths &sp, VertexId v0,
+                                    VertexId v_goal, bool is_goal_explored,
+                                    const Vec3 &p0, const Vec3 &p1);
 
   bool plan(nav_msgs::srv::GetPlan::Request::SharedPtr req,
             nav_msgs::srv::GetPlan::Response::SharedPtr res);
 
-  void fillMapCloud(sensor_msgs::msg::PointCloud2 &cloud, const Grid &grid,
-                    const std::vector<Cost> &path_costs,
-                    const std::vector<Cost> &f_values);
+  void fill_map_cloud(sensor_msgs::msg::PointCloud2 &cloud, const Grid &grid,
+                      const std::vector<Cost> &path_costs,
+                      const std::vector<Cost> &f_values);
 
   /**
    * Publish the rviz-only "map" cloud, if anybody is listening.
@@ -146,7 +220,7 @@ public:
    * joining subscriber (rviz, or a `ros2 bag record` started after the fact)
    * misses the cycles before it connected.
    */
-  void createAndPublishMapCloud(const ShortestPaths &sp);
+  void create_and_publish_map_cloud(const ShortestPaths &sp);
 
   /**
    * Rasterize the cost grid into a nav_msgs/OccupancyGrid centred on @p start.
@@ -155,18 +229,20 @@ public:
    * the planner has never seen stay unknown (-1).  This is what the nav2
    * global costmap consumes.
    */
-  void fillMapOccupancyGrid(nav_msgs::msg::OccupancyGrid &occ_grid);
+  void fill_map_occupancy_grid(nav_msgs::msg::OccupancyGrid &occ_grid);
 
   /// Index of @p p in @p occ_grid, or -1 when it falls outside.
-  int pointToOccupancyGridCell(const Point2f &p,
+  int
+  point_to_occupancy_grid_cell(const Point2f &p,
                                const nav_msgs::msg::OccupancyGrid &occ_grid);
 
   /// Bottom-left corner of an occupancy grid centred on @p robot_pose.
   geometry_msgs::msg::Point
-  getOccupancyGridOrigin(const geometry_msgs::msg::Pose &robot_pose,
-                         const nav_msgs::msg::OccupancyGrid &occ_grid);
+  get_occupancy_grid_origin(const geometry_msgs::msg::Pose &robot_pose,
+                            const nav_msgs::msg::OccupancyGrid &occ_grid);
 
-  void createAndPublishMapOccupancyGrid(const geometry_msgs::msg::Pose &start);
+  void
+  create_and_publish_map_occupancy_grid(const geometry_msgs::msg::Pose &start);
 
   /**
    * Log the per-phase breakdown of the last planning cycle.
@@ -183,42 +259,42 @@ public:
    * map_range is the configured bound (0 = unbounded), repeated on every line
    * so that a bag says which regime "cells" was measured in (P6).
    */
-  void logPlanSummary() const;
+  void log_plan_summary() const;
 
-  bool planSafe(nav_msgs::srv::GetPlan::Request::SharedPtr req,
-                nav_msgs::srv::GetPlan::Response::SharedPtr res);
+  bool plan_safe(nav_msgs::srv::GetPlan::Request::SharedPtr req,
+                 nav_msgs::srv::GetPlan::Response::SharedPtr res);
 
   /// Service callback.  nav_msgs/GetPlan has no success field, so a failed
   /// plan is reported as a warning and an empty (but stamped) plan.
-  void requestPlan(nav_msgs::srv::GetPlan::Request::SharedPtr req,
-                   nav_msgs::srv::GetPlan::Response::SharedPtr res);
+  void request_plan(nav_msgs::srv::GetPlan::Request::SharedPtr req,
+                    nav_msgs::srv::GetPlan::Response::SharedPtr res);
 
   /// Service callback: drop the whole grid.  std_srvs/Trigger, so a caller
   /// gets the cell count back; it used to be nav2_msgs/ClearEntireCostmap,
   /// whose empty response said nothing and dragged the whole nav2_msgs
   /// dependency in for one service type.
-  void clearMap(std_srvs::srv::Trigger::Request::SharedPtr,
-                std_srvs::srv::Trigger::Response::SharedPtr res);
+  void clear_map(std_srvs::srv::Trigger::Request::SharedPtr,
+                 std_srvs::srv::Trigger::Response::SharedPtr res);
 
   /**
    * Restore the ad-hoc layer of every cell the last apply touched.
    *
-   * Equivalent to fillLayer() over the whole grid only because nothing else
+   * Equivalent to fill_layer() over the whole grid only because nothing else
    * ever writes adhoc_layer_: cells created since the last apply already carry
-   * default_costs_[adhoc_layer_] (Grid::createCell), and a cloud cost field
-   * mapped onto the ad-hoc layer is rejected by checkInputParameters().  Every
-   * operation that invalidates CellIds (clearMap(), the P6 eviction) must
-   * drop the dirty list.
+   * default_costs_[adhoc_layer_] (Grid::create_cell), and a cloud cost field
+   * mapped onto the ad-hoc layer is rejected by check_input_parameters().
+   * Every operation that invalidates CellIds (clear_map(), the P6 eviction)
+   * must drop the dirty list.
    */
-  void clearAdHocLayer();
+  void clear_ad_hoc_layer();
 
-  void applySidelobesCosts(const Vec3 &robot_pos, float robot_yaw);
+  void apply_sidelobes_costs(const Vec3 &robot_pos, float robot_yaw);
 
-  void applyAdHocCosts(const Vec3 &robot_pos, float robot_yaw);
+  void apply_ad_hoc_costs(const Vec3 &robot_pos, float robot_yaw);
 
-  void planningTimer();
+  void planning_timer();
 
-  void receiveCloud(
+  void receive_cloud(
       const std::shared_ptr<const sensor_msgs::msg::PointCloud2> &input,
       int cloud_index);
 
@@ -248,14 +324,14 @@ public:
    * Eviction contract in grid.h.  Today that is only the ad-hoc dirty list,
    * which is restored *before* the compaction (its CellIds are still valid at
    * that point) so that no cell keeps a stale sidelobe cost forever.  P2's
-   * neighbour table is remapped by Grid::eraseCells() itself, so no caller can
+   * neighbour table is remapped by Grid::erase_cells() itself, so no caller can
    * forget it.
    *
    * @return true if the compaction ran (whether or not it removed anything).
    */
-  bool maybeEvictCells(const Point2f &robot);
+  bool maybe_evict_cells(const Point2f &robot);
 
-  void receiveCloudSafe(
+  void receive_cloud_safe(
       const std::shared_ptr<const sensor_msgs::msg::PointCloud2> &input,
       int cloud_index);
 
@@ -272,7 +348,7 @@ protected:
    * Nothing else has to be invalidated when this changes at runtime: GraphN
    * builds its per-vertex in-bounds cache inside every search.
    */
-  void updateMaxCostsAbsolute(bool log);
+  void update_max_costs_absolute(bool log);
 
   /**
    * Validate the per-cost-field parameter vectors.
@@ -281,7 +357,7 @@ protected:
    * logged; a non-empty vector of the wrong size is a configuration error and
    * throws std::runtime_error (B15).
    */
-  void checkInputParameters(int num_input_clouds);
+  void check_input_parameters(int num_input_clouds);
 
   rclcpp::Node::SharedPtr nh_;
   rclcpp::TimerBase::SharedPtr planning_timer_;
@@ -316,7 +392,7 @@ protected:
   /// TF is genuinely absent, and then failing fast beats parking the single
   /// executor thread.
   float request_tf_timeout_{0.5};
-  /// Timeout of the per-cloud lookup in receiveCloud(); short on purpose, see
+  /// Timeout of the per-cloud lookup in receive_cloud(); short on purpose, see
   /// P5.  It has to cover one TF period (0.2 s = 2 periods of a 10 Hz TF), so
   /// that a transform that is merely a few ms into the future does not drop
   /// the frame, but still short enough that a TF dropout drops frames rather
@@ -358,7 +434,7 @@ protected:
   /// <= 0 or NaN disables the crop (P6a).  Bounds the per-cloud work, not the
   /// grid: driving on keeps creating cells.
   float input_range_{10.0};
-  /// The crop receiveCloud() actually applies: input_range_, clamped to
+  /// The crop receive_cloud() actually applies: input_range_, clamped to
   /// map_range_ when the map is bounded and the crop would reach past it (see
   /// the constructor).  Kept separate so the declared parameter still reports
   /// what the operator set.
@@ -408,7 +484,7 @@ protected:
   bool start_on_request_{true};
   bool stop_on_goal_{true};
   float goal_reached_dist_{std::numeric_limits<float>::quiet_NaN()};
-  int mode_{2};
+  PlanningMode mode_{kDefaultPlanningMode};
   /// If the start is farther than this from the nearest traversable cell we
   /// plan a straight line to the goal instead (this should only happen with
   /// navigate-through-poses, where the start need not be the robot).
@@ -417,11 +493,11 @@ protected:
   // Ad-hoc costs
   std::vector<std::string> adhoc_costs_{};
   int adhoc_layer_{3};
-  /// Cells whose ad-hoc layer the last applyAdHocCosts() wrote, so that
-  /// clearAdHocLayer() restores those instead of sweeping the grid (P3).
+  /// Cells whose ad-hoc layer the last apply_ad_hoc_costs() wrote, so that
+  /// clear_ad_hoc_layer() restores those instead of sweeping the grid (P3).
   std::vector<CellId> adhoc_dirty_{};
 
-  // Instrumentation (see PlanTimings); written by plan()/planSafe() only.
+  // Instrumentation (see PlanTimings); written by plan()/plan_safe() only.
   PlanTimings plan_timings_{};
 
   // Sidelobes strategy

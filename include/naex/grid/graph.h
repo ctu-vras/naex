@@ -53,9 +53,18 @@ public:
   static constexpr Cost INF = std::numeric_limits<Cost>::infinity();
   /// Compile-time neighbourhood, 4 or 8.
   static constexpr uint8_t kNeighborhood = N;
+  /**
+   * Cost of crossing a cell that costs nothing at all.
+   *
+   * An edge costs (kBaseCellCost + mean of the two cell costs) * its length,
+   * so a free cell still costs its length, the search prefers short routes
+   * among equally cheap ones, and the plain-distance A* heuristic stays
+   * admissible (no edge is ever cheaper than its length).
+   */
+  static constexpr Cost kBaseCellCost = 1;
 
   explicit GraphN(const Grid &grid, const Costs &max_costs = Costs())
-      : grid_(grid), max_costs_(max_costs), cell_size_(grid.cellSize()) {
+      : grid_(grid), max_costs_(max_costs), cell_size_(grid.cell_size()) {
     const size_t n = grid_.size();
     total_.resize(n);
     for (size_t v = 0; v < n; ++v) {
@@ -63,7 +72,7 @@ public:
       // An out-of-bounds cell is stored as INF rather than in a second flag
       // array: 1 + (INF + x) / 2, scaled, is still exactly INF, which is what
       // cost() returned for it before, and the inner loop keeps one branch.
-      total_[v] = grid::costsInBounds(c, max_costs_)
+      total_[v] = grid::costs_in_bounds(c, max_costs_)
                       ? c.total()
                       : std::numeric_limits<Cost>::infinity();
     }
@@ -90,7 +99,7 @@ public:
 
   /// Index into Grid's 8-slot neighbour row for direction @p i of this
   /// neighbourhood: neighbor8(c, 2 * i) == neighbor4(c, i).
-  static inline int dirIndex(const VertexId i) {
+  static inline int dir_index(const VertexId i) {
     return static_cast<int>(N == 8 ? i : 2 * i);
   }
 
@@ -102,13 +111,13 @@ public:
    */
   inline VertexId target(const EdgeId &e) const {
     const VertexId s = source(e);
-    const CellId t = grid_.neighborId(s, dirIndex(target_index(e)));
+    const CellId t = grid_.neighbor_id(s, dir_index(target_index(e)));
     return t == INVALID_CELL_ID ? s : t;
   }
 
   /// True if every bounded layer of @p costs is within max_costs.
-  bool costsInBounds(const Costs &costs) const {
-    return grid::costsInBounds(costs, max_costs_);
+  bool costs_in_bounds(const Costs &costs) const {
+    return grid::costs_in_bounds(costs, max_costs_);
   }
 
   /**
@@ -123,13 +132,13 @@ public:
   inline Cost cost(const EdgeId &e) const {
     const VertexId u = source(e);
     const VertexId i = target_index(e);
-    const CellId v = grid_.neighborId(u, dirIndex(i));
+    const CellId v = grid_.neighbor_id(u, dir_index(i));
     if (v == INVALID_CELL_ID) {
       return INF;
     }
     // Expression and multiplication order kept byte for byte; the exact-cost
     // planning tests pin the accumulated float.
-    Cost cost = 1 + (total_[u] + total_[v]) / 2;
+    Cost cost = kBaseCellCost + (total_[u] + total_[v]) / 2;
     cost *= cell_size_;
     if constexpr (N == 8) {
       cost *= kDist8[i];
@@ -159,13 +168,13 @@ protected:
  * the degree is unchanged.
  */
 template <typename Accept>
-inline int neighborDegree(const Grid &grid, CellId v, uint8_t neighborhood,
-                          Accept accept) {
+inline int neighbor_degree(const Grid &grid, CellId v, uint8_t neighborhood,
+                           Accept accept) {
   const int count = (neighborhood == 4) ? 4 : 8;
   const int step = (neighborhood == 4) ? 2 : 1;
   int degree = 0;
   for (int k = 0; k < count; ++k) {
-    const CellId t = grid.neighborId(v, k * step);
+    const CellId t = grid.neighbor_id(v, k * step);
     if (t != INVALID_CELL_ID && accept(t)) {
       ++degree;
     }

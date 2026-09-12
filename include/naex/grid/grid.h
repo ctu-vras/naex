@@ -110,7 +110,7 @@ struct Costs {
   }
 };
 
-/// Sentinel returned by nearestCell() and Grid::findCell() when there is no
+/// Sentinel returned by nearest_cell() and Grid::find_cell() when there is no
 /// such cell, and by Eviction::old_to_new for a cell that was removed.
 inline constexpr CellId INVALID_CELL_ID = std::numeric_limits<CellId>::max();
 
@@ -206,7 +206,7 @@ inline Cost distance8(int i) {
 }
 
 /**
- * Result of a Grid compaction (Grid::eraseCells(), Grid::evictOutside()).
+ * Result of a Grid compaction (Grid::erase_cells(), Grid::evict_outside()).
  *
  * This is the contract every holder of a CellId must honour (the planner's
  * ad-hoc dirty list today, P2's neighbour table and P7's plan cache later):
@@ -250,7 +250,7 @@ public:
       : cell_size_(cell_size), forget_factor_(forget_factor),
         default_costs_(default_costs) {}
 
-  bool hasCell(const Cell &c) const {
+  bool has_cell(const Cell &c) const {
     return cell_to_id_.find(c) != cell_to_id_.end();
   }
   /**
@@ -260,13 +260,13 @@ public:
    * links of the neighbours found are patched in place, so the table stays
    * exact without ever being rebuilt (P2).
    */
-  void createCell(const Cell &c) {
+  void create_cell(const Cell &c) {
     const auto res = cell_to_id_.try_emplace(c, static_cast<CellId>(size()));
-    assert(res.second && "createCell called on an existing cell");
+    assert(res.second && "create_cell called on an existing cell");
     if (!res.second) {
       return;
     }
-    appendCell(c, res.first->second);
+    append_cell(c, res.first->second);
   }
 
   const Cell &cell(const CellId &id) const {
@@ -277,7 +277,7 @@ public:
     assert(id < size());
     return id_to_cell_[id];
   }
-  Point2f point(const CellId &id) const { return cellToPoint(cell(id)); }
+  Point2f point(const CellId &id) const { return cell_to_point(cell(id)); }
 
   /**
    * CellId of @p c, creating the cell if it does not exist.
@@ -285,25 +285,25 @@ public:
    * One hash lookup on a hit and one insert on a miss (P10); the pre-P10
    * version cost two lookups on a hit and three on a miss.
    */
-  CellId &cellId(const Cell &c) {
+  CellId &cell_id(const Cell &c) {
     const auto res = cell_to_id_.try_emplace(c, static_cast<CellId>(size()));
     if (res.second) {
-      appendCell(c, res.first->second);
+      append_cell(c, res.first->second);
     }
     return res.first->second;
   }
-  const CellId &cellId(const Cell &c) const {
-    assert(hasCell(c));
+  const CellId &cell_id(const Cell &c) const {
+    assert(has_cell(c));
     return cell_to_id_.find(c)->second;
   }
   /// CellId of @p c, or INVALID_CELL_ID if the cell does not exist.  One hash
   /// lookup, and it never creates a cell (P3).
-  CellId findCell(const Cell &c) const;
+  CellId find_cell(const Cell &c) const;
 
-  Cell pointToCell(const Point2f &p) const {
+  Cell point_to_cell(const Point2f &p) const {
     return Cell(std::floor(p.x / cell_size_), std::floor(p.y / cell_size_));
   }
-  Point2f cellToPoint(const Cell &c) const {
+  Point2f cell_to_point(const Cell &c) const {
     return Point2f((c.x + 0.5f) * cell_size_, (c.y + 0.5f) * cell_size_);
   }
 
@@ -315,17 +315,17 @@ public:
     assert(id < size());
     return id_to_costs_[id];
   }
-  Costs &cellCosts(const Cell &c) { return costs(cellId(c)); }
-  Costs &pointCosts(const Point2f &p) { return cellCosts(pointToCell(p)); }
+  Costs &cell_costs(const Cell &c) { return costs(cell_id(c)); }
+  Costs &point_costs(const Point2f &p) { return cell_costs(point_to_cell(p)); }
 
   /**
    * Blend @p cost into layer @p level of the cell already resolved to @p id.
    *
-   * The id-taking half of updateCellCost(), split out so a caller that
-   * already knows the CellId (the "last cell" cache of Planner::receiveCloud)
+   * The id-taking half of update_cell_cost(), split out so a caller that
+   * already knows the CellId (the "last cell" cache of Planner::receive_cloud)
    * does not pay a second hash lookup for it.
    */
-  Costs &updateCostAt(CellId id, int level, Cost cost) {
+  Costs &update_cost_at(CellId id, int level, Cost cost) {
     Costs &costs = this->costs(id);
     if (std::isfinite(costs.data[level])) {
       Cost w0 = (1. - forget_factor_);
@@ -336,13 +336,13 @@ public:
     }
     return costs;
   }
-  Costs &updateCellCost(Cell c, int level, Cost cost) {
-    return updateCostAt(cellId(c), level, cost);
+  Costs &update_cell_cost(Cell c, int level, Cost cost) {
+    return update_cost_at(cell_id(c), level, cost);
   }
-  Costs &updatePointCost(Point2f p, int level, Cost cost) {
-    return updateCellCost(pointToCell(p), level, cost);
+  Costs &update_point_cost(Point2f p, int level, Cost cost) {
+    return update_cell_cost(point_to_cell(p), level, cost);
   }
-  float cellSize() const { return cell_size_; }
+  float cell_size() const { return cell_size_; }
 
   bool empty() const { return id_to_costs_.empty(); }
   size_t size() const { return id_to_costs_.size(); }
@@ -379,7 +379,7 @@ public:
    * Flat table, no hash lookup: this is the Dijkstra inner loop.  For the
    * 4-neighbourhood pass 2 * i, see kNbrStride.
    */
-  CellId neighborId(CellId id, int i) const {
+  CellId neighbor_id(CellId id, int i) const {
     assert(id < size());
     assert(i >= 0 && i < static_cast<int>(kNbrStride));
     return nbr_[kNbrStride * id + static_cast<size_t>(i)];
@@ -388,7 +388,7 @@ public:
   /**
    * Monotone counter of *structural* changes of the grid.
    *
-   * Incremented by createCell(), clear() and by a compaction that actually
+   * Incremented by create_cell(), clear() and by a compaction that actually
    * removed something, i.e. exactly by the operations after which a CellId may
    * mean a different cell than before.  Cost updates do **not** bump it, so a
    * cache keyed on version() must still track cost changes itself (that is the
@@ -400,7 +400,7 @@ public:
    * Drop every cell for which @p keep (called with its CellId) is false and
    * renumber the survivors, keeping their relative order.
    *
-   * This is the **only** place besides createCell() and clear() that writes
+   * This is the **only** place besides create_cell() and clear() that writes
    * id_to_cell_/id_to_costs_, and the single hook for everything that caches a
    * CellId: see the Eviction contract.  O(N) in the grid size plus one rebuild
    * of the cell -> id map.  When @p keep accepts everything the grid is left
@@ -409,7 +409,7 @@ public:
    *
    * @p keep must not modify the grid.
    */
-  template <typename Keep> Eviction eraseCells(Keep keep) {
+  template <typename Keep> Eviction erase_cells(Keep keep) {
     Eviction ev;
     const CellId n = static_cast<CellId>(size());
     ev.before = n;
@@ -444,7 +444,7 @@ public:
     for (CellId v = 0; v < kept; ++v) {
       cell_to_id_[id_to_cell_[v]] = v;
     }
-    remapNeighbors(ev);
+    remap_neighbors(ev);
     ev.version = ++version_;
     return ev;
   }
@@ -458,10 +458,10 @@ public:
    * retained cells is then exact ((2 r + 1)^2) and the test is two integer
    * comparisons.  A negative radius keeps nothing.
    */
-  Eviction evictOutside(const Cell &center, int32_t radius_cells) {
+  Eviction evict_outside(const Cell &center, int32_t radius_cells) {
     const int32_t cx = center.x;
     const int32_t cy = center.y;
-    return eraseCells([&](CellId v) {
+    return erase_cells([&](CellId v) {
       const Cell &c = id_to_cell_[v];
       return std::abs(static_cast<int32_t>(c.x) - cx) <= radius_cells &&
              std::abs(static_cast<int32_t>(c.y) - cy) <= radius_cells;
@@ -478,12 +478,12 @@ protected:
    * antipodal slot of each of their rows.  A neighbour created later patches
    * the link from its own side, so no rebuild is ever needed.
    */
-  void appendCell(const Cell &c, CellId id) {
+  void append_cell(const Cell &c, CellId id) {
     id_to_cell_.push_back(c);
     id_to_costs_.push_back(default_costs_);
     nbr_.resize(nbr_.size() + kNbrStride, INVALID_CELL_ID);
     for (int i = 0; i < static_cast<int>(kNbrStride); ++i) {
-      const CellId n = findCell(neighbor8(c, i));
+      const CellId n = find_cell(neighbor8(c, i));
       if (n != INVALID_CELL_ID) {
         nbr_[kNbrStride * id + static_cast<size_t>(i)] = n;
         // neighbor8 is antipodal: c is the ((i + 4) & 7)-th neighbour of n.
@@ -500,13 +500,13 @@ protected:
    * O(N), hash-free and allocation-free: old_to_new already yields
    * INVALID_CELL_ID for a neighbour that was evicted, so the boundary of the
    * retained region needs no special case, and new id <= old id makes the pass
-   * safe in place — the same argument eraseCells() uses for the cells
+   * safe in place — the same argument erase_cells() uses for the cells
    * themselves.  Keeping the capacity also matters: a grid that is compacted
    * again and again while it regrows would otherwise reallocate a multi-megabyte
-   * block per eviction.  This lives inside eraseCells() so that no caller can
+   * block per eviction.  This lives inside erase_cells() so that no caller can
    * forget it (P2 / the Eviction contract).
    */
-  void remapNeighbors(const Eviction &ev) {
+  void remap_neighbors(const Eviction &ev) {
     for (CellId v = 0; v < static_cast<CellId>(ev.before); ++v) {
       const CellId w = ev.old_to_new[v];
       if (w == INVALID_CELL_ID) {
@@ -539,23 +539,34 @@ protected:
    * Flat neighbour table (P2): nbr_[kNbrStride * id + i] is the CellId of
    * neighbor8(cell(id), i), or INVALID_CELL_ID when that cell does not exist.
    *
-   * Maintained incrementally by appendCell(), dropped by clear() and remapped
-   * by eraseCells() — the three (and only three) writers of id_to_cell_.
+   * Maintained incrementally by append_cell(), dropped by clear() and remapped
+   * by erase_cells() — the three (and only three) writers of id_to_cell_.
    * 32 B per cell, i.e. 6.9 MB at 216 k cells.
    */
   std::vector<CellId> nbr_;
 };
 
-inline CellId Grid::findCell(const Cell &c) const {
+inline CellId Grid::find_cell(const Cell &c) const {
   const auto it = cell_to_id_.find(c);
   return it == cell_to_id_.end() ? INVALID_CELL_ID : it->second;
 }
 
+/// Largest cell index a Cell (a pair of int16_t) can hold.
+inline constexpr float kMaxCellIndex = 32767.f;
+
 /**
- * Smallest |coordinate|, in metres, that Grid::pointToCell() can no longer
+ * Chebyshev radius, in cells, that already covers the whole int16_t cell
+ * range; cell_radius() clamps to it instead of overflowing.
+ */
+inline constexpr int32_t kMaxCellRadius = 65536;
+
+/**
+ * Smallest |coordinate|, in metres, that Grid::point_to_cell() can no longer
  * convert without overflowing the int16_t cell index (+-13.1 km at 0.4 m).
  */
-inline float maxCellCoord(float cell_size) { return 32767.f * cell_size; }
+inline float max_cell_coord(float cell_size) {
+  return kMaxCellIndex * cell_size;
+}
 
 /**
  * True if @p p can be converted to a Cell at all: both coordinates finite and
@@ -565,25 +576,25 @@ inline float maxCellCoord(float cell_size) { return 32767.f * cell_size; }
  * behaviour; before P6 such a point silently created a phantom cell somewhere
  * in the grid (B8).
  */
-inline bool inCellRange(const Grid &grid, const Point2f &p) {
-  const float limit = maxCellCoord(grid.cellSize());
+inline bool in_cell_range(const Grid &grid, const Point2f &p) {
+  const float limit = max_cell_coord(grid.cell_size());
   return std::isfinite(p.x) && std::isfinite(p.y) && std::abs(p.x) < limit &&
          std::abs(p.y) < limit;
 }
 
 /**
  * True if the map-frame point @p p may be inserted into @p grid: it must pass
- * inCellRange() and, when @p range > 0, lie within @p range of @p origin
+ * in_cell_range() and, when @p range > 0, lie within @p range of @p origin
  * (2-D Euclidean, boundary inclusive).
  *
  * A @p range <= 0 or NaN disables the crop, and so does a non-finite
  * @p origin (a broken transform must not silently empty the map).  This is the
- * per-point predicate of Planner::receiveCloud(), factored out so that it is
+ * per-point predicate of Planner::receive_cloud(), factored out so that it is
  * testable without a ROS node.
  */
-inline bool acceptInputPoint(const Grid &grid, const Point2f &p,
-                             const Point2f &origin, float range) {
-  if (!inCellRange(grid, p)) {
+inline bool accept_input_point(const Grid &grid, const Point2f &p,
+                               const Point2f &origin, float range) {
+  if (!in_cell_range(grid, p)) {
     return false;
   }
   if (!(range > 0.f) || !std::isfinite(origin.x) || !std::isfinite(origin.y)) {
@@ -601,13 +612,13 @@ inline bool acceptInputPoint(const Grid &grid, const Point2f &p,
  * Clamped to the int16_t cell range, so a range larger than the grid can hold
  * keeps everything instead of overflowing.
  */
-inline int32_t cellRadius(const Grid &grid, float range) {
+inline int32_t cell_radius(const Grid &grid, float range) {
   if (!(range > 0.f)) {
     return 0;
   }
-  const float cells = std::ceil(range / grid.cellSize());
-  if (!(cells < 65536.f)) {
-    return 65536;
+  const float cells = std::ceil(range / grid.cell_size());
+  if (!(cells < static_cast<float>(kMaxCellRadius))) {
+    return kMaxCellRadius;
   }
   return static_cast<int32_t>(cells);
 }
@@ -625,7 +636,7 @@ inline int32_t cellRadius(const Grid &grid, float range) {
  * constructing a Graph: a Graph caches the per-vertex result and would be
  * stale once the ad-hoc layer is rewritten.
  */
-inline bool costsInBounds(const Costs &costs, const Costs &max_costs) {
+inline bool costs_in_bounds(const Costs &costs, const Costs &max_costs) {
   for (size_t i = 0; i < Costs::kSize; ++i) {
     // Skip layers without a finite bound.
     if (!std::isfinite(max_costs[i])) {
@@ -639,7 +650,7 @@ inline bool costsInBounds(const Costs &costs, const Costs &max_costs) {
 }
 
 /// True if @p layer is a valid index into Costs.
-inline bool isValidLayer(int layer) {
+inline bool is_valid_layer(int layer) {
   return layer >= 0 && static_cast<size_t>(layer) < Costs::kSize;
 }
 
@@ -650,7 +661,7 @@ inline bool isValidLayer(int layer) {
  * Returned as a double so that a radius large enough to cover the whole int16
  * cell range cannot overflow; the caller compares it against Grid::size().
  */
-inline double boundedCellCount(int32_t radius_cells) {
+inline double bounded_cell_count(int32_t radius_cells) {
   if (radius_cells < 0) {
     return 0.0;
   }
@@ -667,16 +678,17 @@ inline double boundedCellCount(int32_t radius_cells) {
  * CellId is invalidated and Grid::version() does not change, which is exactly
  * the pre-P6 behaviour of an unbounded map.
  */
-inline Eviction evictOutsideRange(Grid &grid, const Point2f &center,
-                                  float range) {
-  if (!(range > 0.f) || !inCellRange(grid, center)) {
+inline Eviction evict_outside_range(Grid &grid, const Point2f &center,
+                                    float range) {
+  if (!(range > 0.f) || !in_cell_range(grid, center)) {
     Eviction ev;
     ev.before = grid.size();
     ev.after = grid.size();
     ev.version = grid.version();
     return ev;
   }
-  return grid.evictOutside(grid.pointToCell(center), cellRadius(grid, range));
+  return grid.evict_outside(grid.point_to_cell(center),
+                            cell_radius(grid, range));
 }
 
 /**
@@ -686,8 +698,8 @@ inline Eviction evictOutsideRange(Grid &grid, const Point2f &center,
  * ad-hoc layer reset can be unit tested and, later, replaced by a dirty-list
  * reset (P3) in exactly one place.
  */
-inline void fillLayer(Grid &grid, int layer, Cost cost) {
-  if (!isValidLayer(layer)) {
+inline void fill_layer(Grid &grid, int layer, Cost cost) {
+  if (!is_valid_layer(layer)) {
     return;
   }
   const CellId n = static_cast<CellId>(grid.size());
@@ -708,14 +720,15 @@ inline void fillLayer(Grid &grid, int layer, Cost cost) {
  *
  * Only the cell bounding box of the disc is walked: a cell whose centre is
  * within @p radius of @p center has its centre inside
- * [center - radius, center + radius], and pointToCell() is monotone, so the box
- * corners bracket its index.  The distance test is the same expression as the
- * former full-grid pass, hence the selected set is identical.
+ * [center - radius, center + radius], and point_to_cell() is monotone, so
+ * the box corners bracket its index.  The distance test is the same
+ * expression as the former full-grid pass, hence the selected set is
+ * identical.
  */
-inline void applyDiscCost(Grid &grid, int layer, const Point2f &center,
-                          float radius, Cost cost,
-                          std::vector<CellId> *touched = nullptr) {
-  if (!isValidLayer(layer)) {
+inline void apply_disc_cost(Grid &grid, int layer, const Point2f &center,
+                            float radius, Cost cost,
+                            std::vector<CellId> *touched = nullptr) {
+  if (!is_valid_layer(layer)) {
     return;
   }
   // A non-finite centre or radius selected nothing in the full-grid pass (every
@@ -726,12 +739,12 @@ inline void applyDiscCost(Grid &grid, int layer, const Point2f &center,
   }
   // int32 loop counters: the int16 cell range can be exhausted far from the
   // origin, and lo > hi (nothing to do) must not become an infinite loop.
-  const Cell lo = grid.pointToCell({center.x - radius, center.y - radius});
-  const Cell hi = grid.pointToCell({center.x + radius, center.y + radius});
+  const Cell lo = grid.point_to_cell({center.x - radius, center.y - radius});
+  const Cell hi = grid.point_to_cell({center.x + radius, center.y + radius});
   for (int32_t x = lo.x; x <= hi.x; ++x) {
     for (int32_t y = lo.y; y <= hi.y; ++y) {
-      const CellId v =
-          grid.findCell(Cell(static_cast<int16_t>(x), static_cast<int16_t>(y)));
+      const CellId v = grid.find_cell(
+          Cell(static_cast<int16_t>(x), static_cast<int16_t>(y)));
       if (v == INVALID_CELL_ID) {
         continue;
       }
@@ -756,7 +769,7 @@ inline void applyDiscCost(Grid &grid, int layer, const Point2f &center,
  * strict-less argmin loops this replaces in Planner::plan().
  */
 template <typename Accept>
-CellId nearestCell(const Grid &grid, const Point2f &p, Accept accept) {
+CellId nearest_cell(const Grid &grid, const Point2f &p, Accept accept) {
   CellId best = INVALID_CELL_ID;
   float best_dist = std::numeric_limits<float>::infinity();
   const CellId n = static_cast<CellId>(grid.size());

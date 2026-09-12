@@ -19,7 +19,7 @@ namespace naex {
 namespace grid {
 
 /// Euclidean distance between the centres of cells @p u and @p v.
-inline Value cellDistance(const Grid &grid, VertexId u, VertexId v) {
+inline Value cell_distance(const Grid &grid, VertexId u, VertexId v) {
   const Point2f a = grid.point(u);
   const Point2f b = grid.point(v);
   const float dx = a.x - b.x;
@@ -34,9 +34,9 @@ inline Value cellDistance(const Grid &grid, VertexId u, VertexId v) {
  * This is the A* range crop; it is exposed because the frontier detection in
  * the planner has to agree with it cell for cell.
  */
-inline bool withinRange(const Grid &grid, VertexId v, VertexId start,
-                        float max_range) {
-  return !(cellDistance(grid, v, start) > max_range);
+inline bool within_range(const Grid &grid, VertexId v, VertexId start,
+                         float max_range) {
+  return !(cell_distance(grid, v, start) > max_range);
 }
 
 /**
@@ -58,7 +58,7 @@ struct MaxRangeVertexFilter {
         num_vertices_out_of_range_(num_vertices_out_of_range) {}
 
   bool operator()(VertexId v) const {
-    if (withinRange(*grid_, v, start_, max_range_)) {
+    if (within_range(*grid_, v, start_, max_range_)) {
       return true;
     }
     if (num_vertices_out_of_range_) {
@@ -114,7 +114,7 @@ struct AstarGoalVisitor : public boost::default_astar_visitor {
   struct GoalNotFound {};
 
   template <typename G> void examine_vertex(VertexId u, const G &) const {
-    if (!naex::grid::costsInBounds(grid_->costs(u), max_costs_)) {
+    if (!naex::grid::costs_in_bounds(grid_->costs(u), max_costs_)) {
       throw GoalNotFound();
     }
     if (stop_on_goal_ && u == goal_) {
@@ -135,7 +135,7 @@ private:
  *
  * One class for both searches, so that the planner and the mule planner can
  * hold it as a value and hand it to the same map-cloud publisher.  It is
- * reusable (P2): compute() and computeAstar() keep the predecessor, path-cost,
+ * reusable (P2): compute() and compute_astar() keep the predecessor, path-cost,
  * f-value and colour buffers across calls, so a repeated search on a grid of
  * the same size allocates nothing.  The runtime @p neighborhood selects
  * between the two compile-time GraphN instantiations; everything else is
@@ -189,40 +189,40 @@ public:
    *        only then can the search stop on the goal.
    * @param max_range cells farther than this from the start cell are not
    *        expanded at all.
-   * @return true if the goal cell was reached (also available as foundGoal()).
+   * @return true if the goal cell was reached (also available as found_goal()).
    */
-  bool computeAstar(const rclcpp::Logger &log, const Grid &grid,
-                    VertexId start, const Vec3 &goal_point,
-                    bool is_goal_explored, float max_range,
-                    uint8_t neighborhood = 8,
-                    const Costs &max_costs = Costs(0.0)) {
+  bool compute_astar(const rclcpp::Logger &log, const Grid &grid,
+                     VertexId start, const Vec3 &goal_point,
+                     bool is_goal_explored, float max_range,
+                     uint8_t neighborhood = 8,
+                     const Costs &max_costs = Costs(0.0)) {
     astar_ = true;
     found_goal_ = false;
     if (neighborhood == 4) {
-      runAstar<4>(log, grid, start, goal_point, is_goal_explored, max_range,
-                  max_costs);
+      run_astar<4>(log, grid, start, goal_point, is_goal_explored, max_range,
+                   max_costs);
     } else {
-      runAstar<8>(log, grid, start, goal_point, is_goal_explored, max_range,
-                  max_costs);
+      run_astar<8>(log, grid, start, goal_point, is_goal_explored, max_range,
+                   max_costs);
     }
     return found_goal_;
   }
 
   const std::vector<VertexId> &predecessors() const { return predecessor_; }
-  const std::vector<Cost> &pathCosts() const { return path_costs_; }
+  const std::vector<Cost> &path_costs() const { return path_costs_; }
   /// A* f = g + h per cell; all zeros after a Dijkstra run.
-  const std::vector<Cost> &fValues() const { return f_values_; }
+  const std::vector<Cost> &f_values() const { return f_values_; }
   /// 1 for every cell the search expanded, i.e. every reachable cell.
   const std::vector<std::uint8_t> &visited() const { return visited_; }
 
   const VertexId &predecessor(VertexId v) const { return predecessor_[v]; }
-  const Cost &pathCost(VertexId v) const { return path_costs_[v]; }
-  const Cost &fValue(VertexId v) const { return f_values_[v]; }
+  const Cost &path_cost(VertexId v) const { return path_costs_[v]; }
+  const Cost &f_value(VertexId v) const { return f_values_[v]; }
 
   /// True if the last search was an A* search.
-  bool isAstar() const { return astar_; }
+  bool is_astar() const { return astar_; }
   /// True if the last A* search reached its goal cell.
-  bool foundGoal() const { return found_goal_; }
+  bool found_goal() const { return found_goal_; }
 
   /**
    * Length, in metres, of the predecessor path from @p v_goal back to
@@ -233,8 +233,8 @@ public:
    * "drive all the way around an explored loop" case the frontier selection
    * exists to avoid.
    */
-  Value cheapestPathEuclideanDist(const Grid &grid, VertexId v_start,
-                                  VertexId v_goal) const {
+  Value cheapest_path_euclidean_dist(const Grid &grid, VertexId v_start,
+                                     VertexId v_goal) const {
     if (v_goal == INVALID_VERTEX_ID || v_start == INVALID_VERTEX_ID) {
       return std::numeric_limits<Value>::infinity();
     }
@@ -244,7 +244,7 @@ public:
     VertexId v = v_goal;
     while (v != v_start) {
       if (previous != INVALID_VERTEX_ID) {
-        dist += cellDistance(grid, v, previous);
+        dist += cell_distance(grid, v, previous);
       }
       previous = v;
       const VertexId pred = predecessor_[v];
@@ -284,9 +284,9 @@ protected:
   }
 
   template <uint8_t N>
-  void runAstar(const rclcpp::Logger &log, const Grid &grid, VertexId start,
-                const Vec3 &goal_point, bool is_goal_explored, float max_range,
-                const Costs &max_costs) {
+  void run_astar(const rclcpp::Logger &log, const Grid &grid, VertexId start,
+                 const Vec3 &goal_point, bool is_goal_explored, float max_range,
+                 const Costs &max_costs) {
     typedef boost::filtered_graph<GraphN<N>, boost::keep_all,
                                   MaxRangeVertexFilter>
         FilteredGraph;
@@ -311,8 +311,8 @@ protected:
     // Stopping on the goal only makes sense when the goal is a cell we have.
     VertexId goal = INVALID_VERTEX_ID;
     if (is_goal_explored) {
-      goal = grid.findCell(
-          grid.pointToCell({goal_point.x(), goal_point.y()}));
+      goal = grid.find_cell(
+          grid.point_to_cell({goal_point.x(), goal_point.y()}));
     }
     const AstarGoalVisitor visitor(goal, is_goal_explored, grid, max_costs);
     const AStarHeuristic<N> heuristic(grid, goal_point);
@@ -391,7 +391,7 @@ public:
   }
 
   const std::vector<std::uint8_t> &visited() const { return visited_; }
-  size_t numVisited() const { return num_visited_; }
+  size_t num_visited() const { return num_visited_; }
 
 protected:
   Graph graph_;
