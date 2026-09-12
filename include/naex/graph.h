@@ -1,83 +1,69 @@
-//
-// Created by petrito1 on 11/26/20.
-//
+#pragma once
 
-#ifndef NAEX_GRAPH_H
-#define NAEX_GRAPH_H
-
+#include <naex/iterators.h>
 #include <naex/map.h>
+#include <naex/types.h>
+#include <boost/graph/graph_traits.hpp>
+#include <boost/graph/properties.hpp>
+#include <utility>
 
-using namespace naex;
+// Boost graph adapter for naex::Graph / naex::EdgeCosts.
+// NB: naex/grid/graph.h provides an equivalent adapter for the grid planner.
+namespace boost {
 
-namespace boost
-{
-template<>
-struct graph_traits<naex::Graph>
-{
-    typedef Vertex vertex_descriptor;
-    typedef Vertex vertices_size_type;
-    typedef Edge edge_descriptor;
-    typedef Edge edges_size_type;
+template <> struct graph_traits<naex::Graph> {
+  typedef naex::Vertex vertex_descriptor;
+  typedef naex::Vertex vertices_size_type;
+  typedef naex::Edge edge_descriptor;
+  typedef naex::Edge edges_size_type;
 
-    typedef directed_tag directed_category;
-    // typedef undirected_tag directed_category;
-    // typedef allow_parallel_edge_tag edge_parallel_category;
-    typedef disallow_parallel_edge_tag edge_parallel_category;
+  typedef directed_tag directed_category;
+  typedef disallow_parallel_edge_tag edge_parallel_category;
 
-    typedef bidirectional_traversal_tag traversal_category;
-    typedef VertexIter vertex_iterator;
-    typedef EdgeIter out_edge_iterator;
+  typedef bidirectional_traversal_tag traversal_category;
+  typedef naex::VertexIter vertex_iterator;
+  typedef naex::EdgeIter out_edge_iterator;
 };
 
-inline Vertex num_vertices(const Graph& g)
-{
-    return g.num_vertices();
+inline naex::Vertex num_vertices(const naex::Graph &g) {
+  return g.num_vertices();
 }
 
-inline std::pair<VertexIter, VertexIter> vertices(const Graph& g)
-{
-    return g.vertices();
+inline std::pair<naex::VertexIter, naex::VertexIter>
+vertices(const naex::Graph &g) {
+  return g.vertices();
 }
 
-inline Vertex source(Edge e, const Graph& g)
-{
-    return g.source(e);
+inline naex::Vertex source(naex::Edge e, const naex::Graph &g) {
+  return g.source(e);
 }
 
-inline Vertex target(Edge e, const Graph& g)
-{
-    return g.target(e);
+inline naex::Vertex target(naex::Edge e, const naex::Graph &g) {
+  return g.target(e);
 }
 
-inline std::pair<EdgeIter, EdgeIter> out_edges(Vertex u, const Graph& g)
-{
-    return g.out_edges(u);
+inline std::pair<naex::EdgeIter, naex::EdgeIter>
+out_edges(naex::Vertex u, const naex::Graph &g) {
+  return g.out_edges(u);
 }
 
-inline Edge out_degree(Vertex u, const Graph& g)
-{
-    return g.out_degree(u);
+inline naex::Edge out_degree(naex::Vertex u, const naex::Graph &g) {
+  return g.out_degree(u);
 }
 
-template<>
-class property_traits<EdgeCosts>
-{
+template <> class property_traits<naex::EdgeCosts> {
 public:
-    typedef Edge key_type;
-    typedef Cost value_type;
-    typedef readable_property_map_tag category;
+  typedef naex::Edge key_type;
+  typedef naex::Cost value_type;
+  typedef readable_property_map_tag category;
 };
 
-inline Cost get(const EdgeCosts& map, const Edge& key)
-{
-    return map[key];
+inline naex::Cost get(const naex::EdgeCosts &map, const naex::Edge &key) {
+  return map[key];
 }
 
-}  // namespace boost
+} // namespace boost
 
-// Include dijkstra header once all used concepts are defined.
+// Include the Dijkstra header once all used concepts are defined.
 // https://groups.google.com/g/boost-developers-archive/c/G2qArovLKzk
-// #include <boost/graph/dijkstra_shortest_paths.hpp>
 #include <boost/graph/dijkstra_shortest_paths_no_color_map.hpp>
-
-#endif //NAEX_GRAPH_H

@@ -1,39 +1,31 @@
+#pragma once
 
-#ifndef NAEX_EXCEPTIONS_H
-#define NAEX_EXCEPTIONS_H
+#include <stdexcept>
+#include <string>
 
-#define BOOST_STACKTRACE_USE_BACKTRACE
+namespace naex {
 
-#include <boost/stacktrace.hpp>
-#include <exception>
-
-namespace naex
-{
-class Exception: public std::runtime_error
-{
+/**
+ * Runtime error with an optional diagnostic trace.
+ *
+ * The ROS 1 version captured a boost::stacktrace here. Boost.Stacktrace needs
+ * libbacktrace/libdl to be linked explicitly, which the package does not do,
+ * so the trace is left empty and the accessor kept for source compatibility.
+ */
+class Exception : public std::runtime_error {
 public:
-    Exception(const char* what):
-            std::runtime_error(what)
-    {
-        std::stringstream ss;
-        ss << boost::stacktrace::stacktrace();
-        stacktrace_ = ss.str();
-    }
-    const std::string& stacktrace() const
-    {
-        return stacktrace_;
-    }
+  explicit Exception(const char *what) : std::runtime_error(what) {}
+  explicit Exception(const std::string &what) : std::runtime_error(what) {}
+
+  const std::string &stacktrace() const { return stacktrace_; }
+
 private:
-    std::string stacktrace_;
+  std::string stacktrace_;
 };
 
-class NotInitialized: public Exception
-{
+class NotInitialized : public Exception {
 public:
-    NotInitialized(const char* what):
-            Exception(what)
-    {}
+  explicit NotInitialized(const char *what) : Exception(what) {}
 };
-}
 
-#endif  // NAEX_EXCEPTIONS_H
+} // namespace naex
