@@ -318,8 +318,15 @@ public:
   Costs &cellCosts(const Cell &c) { return costs(cellId(c)); }
   Costs &pointCosts(const Point2f &p) { return cellCosts(pointToCell(p)); }
 
-  Costs &updateCellCost(Cell c, int level, Cost cost) {
-    Costs &costs = cellCosts(c);
+  /**
+   * Blend @p cost into layer @p level of the cell already resolved to @p id.
+   *
+   * The id-taking half of updateCellCost(), split out so a caller that
+   * already knows the CellId (the "last cell" cache of Planner::receiveCloud)
+   * does not pay a second hash lookup for it.
+   */
+  Costs &updateCostAt(CellId id, int level, Cost cost) {
+    Costs &costs = this->costs(id);
     if (std::isfinite(costs.data[level])) {
       Cost w0 = (1. - forget_factor_);
       Cost w1 = forget_factor_;
@@ -328,6 +335,9 @@ public:
       costs.data[level] = cost;
     }
     return costs;
+  }
+  Costs &updateCellCost(Cell c, int level, Cost cost) {
+    return updateCostAt(cellId(c), level, cost);
   }
   Costs &updatePointCost(Point2f p, int level, Cost cost) {
     return updateCellCost(pointToCell(p), level, cost);

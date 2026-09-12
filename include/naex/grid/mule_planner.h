@@ -4,10 +4,14 @@
 #include <sensor_msgs/msg/point_cloud2.hpp>
 #include <sensor_msgs/point_cloud2_iterator.hpp>
 #include <rclcpp/rclcpp.hpp>
+#include "naex/clouds.h"
+#include "naex/timer.h"
 #include "naex/types.h"
+#include "naex/grid/conversions.h"
 #include "naex/grid/grid.h"
+#include "naex/grid/path.h"
 #include "naex/grid/search.h"
-#include "naex/grid/planner.h"
+#include <mutex>
 
 namespace naex {
 namespace grid {

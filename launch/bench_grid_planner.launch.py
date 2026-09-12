@@ -13,7 +13,10 @@ that ``path`` messages exist)::
         field_size:=200.0 planning_freq:=1.0 tf_gap:=2.0
 
 P6 acceptance run (the grid grows for 30 s; map_range caps it, input_range
-caps the per-cloud work)::
+caps the per-cloud work).  ``input_range`` defaults to ``map_range``, so the
+run below crops the input to 30 m as well; pass ``input_range:=0.0``
+explicitly to reproduce the uncropped (and much more expensive) pre-2026-09-12
+behaviour::
 
     ros2 launch naex bench_grid_planner.launch.py \\
         field_size:=200.0 grow:=true grow_start_size:=20.0 map_range:=30.0
@@ -55,12 +58,13 @@ _ARGS = {
     "grow": "false",
     "grow_start_size": "20.0",
     "request_rate": "1.0",
-    # 0/0 means "opposite corner of the field".  Note that a lattice-aligned
-    # synthetic field whose point_spacing equals cell_size leaves whole cell
-    # rows empty (floor() of an exact multiple lands one cell low for some
-    # indices), so the far corner is usually in a different connected
-    # component than the robot; pick a nearby goal to exercise the A* "goal
-    # reached" branch.
+    # 0/0 means "opposite corner of the field".  The synthetic field used to
+    # be lattice-aligned, which left whole cell rows empty when point_spacing
+    # equalled cell_size (floor() of an exact multiple lands one cell low for
+    # some indices) and put the far corner in a different connected component
+    # than the robot; bench_grid_planner.py now offsets the points by half a
+    # spacing, so the far corner is reachable and the default goal exercises a
+    # full-length path.
     "goal_x": "0.0",
     "goal_y": "0.0",
     "duration": "30.0",
@@ -82,12 +86,20 @@ _ARGS = {
     # is guided by the accumulated cost only.
     "use_astar": "false",
     "astar_max_range": "50.0",
-    # P6.  Both default to 0 (disabled) so that every configuration recorded
-    # before P6 reproduces: input_range crops the cloud around the sensor,
-    # map_range bounds the grid itself.  The "grow:=true" configuration is the
-    # one map_range is meant for.
-    "input_range": "0.0",
+    # P6.  map_range bounds the grid itself and defaults to 0 (disabled), so
+    # every configuration recorded before P6 reproduces.  input_range crops the
+    # cloud around the sensor and *defaults to map_range* (see the
+    # DeclareLaunchArgument below): 0 while the map is unbounded, so the
+    # 200 m static run is unchanged, but 30 m in the documented
+    # "map_range:=30.0" growth run, which is the setting production uses.
+    # Ingesting past map_range only re-creates the cells the next eviction
+    # drops -- the 2026-09-12 profile measured ~100 k such cells per cycle and
+    # twice the CPU for a map of the same size -- and the node clamps the crop
+    # it applies (with one warning) if a configuration still asks for it.
     "map_range": "0.0",
+    # Placeholder: the real default is a substitution, see below.  The entry
+    # is kept so that "cfg" below still has an input_range key.
+    "input_range": "",
     "evict_period": "10.0",
     # 0 keeps every measured cycle request-driven; > 0 also runs the planning
     # timer, which is what publishes the "path" topic the tf_gap run measures.
@@ -117,7 +129,15 @@ def generate_launch_description():
     args = [
         DeclareLaunchArgument(name, default_value=default)
         for name, default in _ARGS.items()
+        if name != "input_range"
     ]
+    # Declared after map_range (and hence not from the loop above) because its
+    # default *is* map_range: a bounded map must not ingest past its own bound.
+    args.append(
+        DeclareLaunchArgument(
+            "input_range", default_value=LaunchConfiguration("map_range")
+        )
+    )
     args.append(
         DeclareLaunchArgument("bench_script", default_value=_default_bench_script())
     )

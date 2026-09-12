@@ -196,7 +196,19 @@ class BenchGridPlanner(Node):
             return self.cloud_cache[key]
         half = size / 2.0
         n = max(2, int(size / self.point_spacing) + 1)
-        axis = np.linspace(-half, half, n, dtype=np.float32)
+        # Half a spacing off the lattice on purpose.  The planner cells the
+        # points with floor(p / cell_size), and point_spacing usually equals
+        # cell_size, so an unshifted point sits exactly on a cell boundary:
+        # float32 rounding then sends some of them one cell low, and 36 of the
+        # 501 cell rows of a 200 m field come out completely empty.  Those
+        # empty rows cut the 8-neighbourhood, so the far half of the field is a
+        # different connected component and every plan to the default far goal
+        # stopped after a couple of poses.  Shifted by cell_size / 2 each point
+        # lands at a cell centre, half a cell from the nearest boundary, and
+        # the field is one connected component again.
+        axis = np.linspace(-half, half, n, dtype=np.float32) + np.float32(
+            self.point_spacing / 2.0
+        )
         xs, ys = np.meshgrid(axis, axis, indexing="ij")
         xs = xs.ravel()
         ys = ys.ravel()

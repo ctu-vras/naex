@@ -77,7 +77,7 @@ tested as *f* > 1e9 and not with `isfinite` after an A\* run
 | `tf_timeout` | double | 3.0 (robot pose lookup in `plan()`) |
 | `cloud_tf_timeout` | double | 0.05 (per-cloud lookup; late clouds are dropped) |
 | `max_cloud_age` | double | 5.0 |
-| `input_range` | double | 10.0 (crop of the input cloud; <= 0 disables) |
+| `input_range` | double | 10.0 (crop of the input cloud; <= 0 disables; clamped to `map_range` when the map is bounded) |
 | `map_range` | double | 0.0 (bound of the map; 0 = unbounded) |
 | `evict_period` | double | 10.0 (max seconds between two evictions) |
 | `cell_size` | double | 1.0 |
@@ -175,7 +175,15 @@ Consequences of a bounded map, which is why it is opt-in:
   `50.0` (about 63 k) once the site is known.
 - **Set `input_range` no larger than `map_range`.** Otherwise every cloud
   re-creates the cells the last eviction dropped, which is correct but pure
-  churn.
+  churn. Since it is easy to get wrong and expensive when you do, the node
+  **clamps the crop it applies** to `map_range` whenever `map_range > 0` and
+  `input_range` is either disabled (`<= 0`, NaN) or larger than `map_range`,
+  and says so with a single `RCLCPP_WARN` at start-up. The declared parameter
+  is left alone — `ros2 param get /grid_planner input_range` still reports what
+  you set — only the ingestion crop is bounded. Profiling the uncropped
+  `map_range: 30.0` configuration measured ~100 k cells created and evicted per
+  cycle, 48 % of the process in the cell hash plus 19 % in `malloc`/`free`, and
+  twice the CPU of the cropped run for a map of exactly the same size.
 
 The map bound is a radius crop and not an age-based eviction on purpose: the
 map is then a function of *where* the robot is, not of *when* it was somewhere,
@@ -219,8 +227,17 @@ lookup per planning cycle.
 #### Services
 
 - `get_plan` [nav_msgs/srv/GetPlan]
-- `clear_plan_map` [[nav2_msgs/srv/ClearEntireCostmap](https://github.com/ros-navigation/navigation2/blob/main/nav2_msgs/srv/ClearEntireCostmap.srv)]
-  — drops the accumulated grid.
+- `clear_plan_map` [[std_srvs/srv/Trigger](https://docs.ros2.org/latest/api/std_srvs/srv/Trigger.html)]
+  — drops the accumulated grid. The response is always `success: true` with
+  `message: "map cleared: N cells"`, N being the cell count before the clear:
+
+  ```
+  ros2 service call /clear_plan_map std_srvs/srv/Trigger
+  ```
+
+  It was `nav2_msgs/srv/ClearEntireCostmap` before; that service has an empty
+  request *and* an empty response, so it said nothing back, and it was the only
+  reason the package depended on `nav2_msgs` at all.
 
 ### planner
 

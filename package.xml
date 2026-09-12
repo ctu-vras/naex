@@ -18,12 +18,13 @@
   <!-- map.h and traversability.h use FLANN; its serializer needs liblz4. -->
   <depend>libflann-dev</depend>
   <depend>liblz4-dev</depend>
-  <depend>nav2_msgs</depend>
   <depend>nav_msgs</depend>
   <depend>rclcpp</depend>
   <depend>rclcpp_components</depend>
   <depend>sensor_msgs</depend>
   <depend>std_msgs</depend>
+  <!-- grid_planner offers clear_plan_map as std_srvs/srv/Trigger. -->
+  <depend>std_srvs</depend>
   <depend>tf2</depend>
   <depend>tf2_eigen</depend>
   <depend>tf2_geometry_msgs</depend>
