@@ -31,7 +31,9 @@ exploration behaviour. The last request is (by default) repeated periodically at
 | `tf_timeout` | double | 3.0 (robot pose lookup in `plan()`) |
 | `cloud_tf_timeout` | double | 0.05 (per-cloud lookup; late clouds are dropped) |
 | `max_cloud_age` | double | 5.0 |
-| `input_range` | double | 10.0 |
+| `input_range` | double | 10.0 (crop of the input cloud; <= 0 disables) |
+| `map_range` | double | 0.0 (bound of the map; 0 = unbounded) |
+| `evict_period` | double | 10.0 (max seconds between two evictions) |
 | `cell_size` | double | 1.0 |
 | `forget_factor` | double | 1.0 |
 | `neighborhood` | int | 8 (4 or 8) |
@@ -54,6 +56,55 @@ exploration behaviour. The last request is (by default) repeated periodically at
 
 Parameter types are strict: every floating-point parameter is a `double`
 (`tf_timeout: 3` is rejected, use `3.0`) and every integer one an `int`.
+
+##### Bounding the map: `input_range` and `map_range`
+
+The two are different things and both default to being useful only when set
+deliberately.
+
+`input_range` crops the **input**: a point farther than `input_range` from the
+sensor origin (the translation of the cloud-to-map transform) is discarded
+before it can touch the grid, together with any point whose coordinates are not
+finite or fall outside the int16 cell range the grid can address (+-13.1 km at
+`cell_size` 0.4). It bounds the per-cloud work, and it is what keeps the map
+from being extended by far-away, low-confidence measurements — but it does
+**not** bound the map, because cells are never removed by it: driving 1 km with
+`input_range: 5.0` still creates about 60 k cells.
+
+`map_range` bounds the **map**. Cells farther than `map_range` from the robot
+are dropped, which caps the grid at
+`(2 * ceil(map_range / cell_size) + 1)^2` cells and, with it, the memory and the
+planning time (Dijkstra is close to linear in the cell count). `0.0`, the
+default, is the historical behaviour: the map grows for the whole mission and
+the planner gets slower the longer the robot drives. Eviction is done during
+cloud ingestion, at most once per cloud, and only when the robot has moved a
+quarter of `map_range`, when `evict_period` seconds have passed, or when the
+grid has grown to more than 1.5x what the bound retains; a compaction over
+216 k cells takes about 0.4 ms, so the amortised cost is negligible. Each
+eviction is reported as a throttled `perf evict:` log line with the cell count
+before and after, and `perf plan:` repeats the configured `map_range` on every
+line.
+
+Consequences of a bounded map, which is why it is opt-in:
+
+- **Global planning degrades.** A goal outside `map_range` is not in the map,
+  so the planner falls back to the nearest reachable cell — in practice the
+  boundary cell closest to the goal, i.e. "drive toward the goal as far as the
+  map goes". That is the same degradation the planner already has for a goal in
+  unmapped space, but with `map_range` it happens by design.
+- **Detours can be forgotten.** If `map_range` is smaller than the largest
+  obstacle the robot has to circumnavigate, the part of the detour it has
+  already driven falls out of the map and the plan can oscillate. Keep
+  `map_range` several times the largest obstacle scale of the mission site;
+  `100.0` is a safe starting value at `cell_size` 0.4 (about 250 k cells),
+  `50.0` (about 63 k) once the site is known.
+- **Set `input_range` no larger than `map_range`.** Otherwise every cloud
+  re-creates the cells the last eviction dropped, which is correct but pure
+  churn.
+
+The map bound is a radius crop and not an age-based eviction on purpose: the
+map is then a function of *where* the robot is, not of *when* it was somewhere,
+so re-running the same trajectory at a different speed gives the same plan.
 
 The node spins on a single-threaded executor, so a blocking transform lookup in
 the cloud callback stalls the planning timer and the `get_plan` service as well.

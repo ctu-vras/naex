@@ -148,6 +148,7 @@ class BenchGridPlanner(Node):
         self.published_points = 0
         self.perf_lines = []
         self.cloud_lines = []
+        self.evict_lines = []
 
         self.create_timer(
             1.0 / max(self.cloud_rate, 0.01),
@@ -311,11 +312,19 @@ class BenchGridPlanner(Node):
             if entry:
                 self.perf_lines.append(entry)
         elif text.startswith("perf cloud["):
-            # "perf cloud[0]: pts=... tf=... points=... cells=..."
+            # "perf cloud[0]: pts=... skipped=... tf=... points=... evict=...
+            #  cells=..."
             _, _, rest = text.partition(":")
             entry = self._parse_kv(rest)
             if entry:
                 self.cloud_lines.append(entry)
+        elif text.startswith("perf evict:"):
+            # "perf evict: map_range=... center=(...) cells_before=N
+            #  cells_after=M removed=K"; P6 logs one line per eviction that
+            # actually removed something.
+            entry = self._parse_kv(text[len("perf evict:") :])
+            if entry:
+                self.evict_lines.append(entry)
 
     # --- request loop ------------------------------------------------------
 
@@ -426,11 +435,27 @@ class BenchGridPlanner(Node):
             out["latency_max_from_tf_gap_s"] = max(lat_after)
         return out
 
+    @staticmethod
+    def _stats(entries, keys):
+        """(mean, min, median, max) per key over the scraped log lines."""
+        mean, lo, med, hi = {}, {}, {}, {}
+        for k in keys:
+            vals = [e[k] for e in entries if k in e]
+            if vals:
+                mean[k] = statistics.fmean(vals)
+                lo[k] = min(vals)
+                med[k] = statistics.median(vals)
+                hi[k] = max(vals)
+            else:
+                mean[k] = lo[k] = med[k] = hi[k] = float("nan")
+        return mean, lo, med, hi
+
     def report(self, latencies, poses, n_total, req_starts=None):
         req_starts = req_starts if req_starts is not None else []
         qs = _quantiles(latencies, (0.5, 0.9, 1.0))
         perf_keys = (
             "cells",
+            "map_range",
             "tf",
             "adhoc",
             "dijkstra",
@@ -442,21 +467,18 @@ class BenchGridPlanner(Node):
         # Skip the same warmup prefix on the node-side lines as on the client
         # side: the first lines come from grid-filling cycles.
         perf = self.perf_lines[1:] if len(self.perf_lines) > 1 else self.perf_lines
-        perf_mean = {}
-        perf_max = {}
-        for k in perf_keys:
-            vals = [e[k] for e in perf if k in e]
-            perf_mean[k] = statistics.fmean(vals) if vals else float("nan")
-            perf_max[k] = max(vals) if vals else float("nan")
+        perf_mean, perf_min, perf_median, perf_max = self._stats(perf, perf_keys)
 
-        cloud_keys = ("pts", "tf", "points", "cells")
+        # skipped/evict are P6: points rejected by input_range or the validity
+        # guard, and the time the (amortised) map_range compaction took.
+        cloud_keys = ("pts", "skipped", "tf", "points", "evict", "cells")
         cloud = self.cloud_lines[1:] if len(self.cloud_lines) > 1 else self.cloud_lines
-        cloud_mean = {}
-        cloud_max = {}
-        for k in cloud_keys:
-            vals = [e[k] for e in cloud if k in e]
-            cloud_mean[k] = statistics.fmean(vals) if vals else float("nan")
-            cloud_max[k] = max(vals) if vals else float("nan")
+        cloud_mean, cloud_min, cloud_median, cloud_max = self._stats(
+            cloud, cloud_keys
+        )
+        evict_mean, evict_min, evict_median, evict_max = self._stats(
+            self.evict_lines, ("map_range", "cells_before", "cells_after", "removed")
+        )
 
         result = {
             "field_size": self.field_size,
@@ -476,9 +498,18 @@ class BenchGridPlanner(Node):
             "node_perf_lines": len(self.perf_lines),
             "node_cloud_lines": len(self.cloud_lines),
             "cloud_mean": cloud_mean,
+            "cloud_min": cloud_min,
+            "cloud_median": cloud_median,
             "cloud_max": cloud_max,
             "node_mean": perf_mean,
+            "node_min": perf_min,
+            "node_median": perf_median,
             "node_max": perf_max,
+            "node_evictions": len(self.evict_lines),
+            "evict_mean": evict_mean,
+            "evict_min": evict_min,
+            "evict_median": evict_median,
+            "evict_max": evict_max,
             "tf_gap": self.tf_gap_report(latencies, req_starts),
         }
         text = json.dumps(result, indent=2, sort_keys=True)

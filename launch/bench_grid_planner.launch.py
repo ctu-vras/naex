@@ -12,6 +12,14 @@ that ``path`` messages exist)::
     ros2 launch naex bench_grid_planner.launch.py \\
         field_size:=200.0 planning_freq:=1.0 tf_gap:=2.0
 
+P6 acceptance run (the grid grows for 30 s; map_range caps it, input_range
+caps the per-cloud work)::
+
+    ros2 launch naex bench_grid_planner.launch.py \\
+        field_size:=200.0 grow:=true grow_start_size:=20.0 map_range:=30.0
+    ros2 launch naex bench_grid_planner.launch.py \\
+        field_size:=100.0 input_range:=15.0 log_level:=debug
+
 ``bench_script`` defaults to the installed script.  Before the CMake install
 rule is integrated (see scratchpad/cmake_additions_perf.md) it can be pointed
 at the source tree:
@@ -61,6 +69,13 @@ _ARGS = {
     # Planner.
     "cell_size": "0.4",
     "neighborhood": "8",
+    # P6.  Both default to 0 (disabled) so that every configuration recorded
+    # before P6 reproduces: input_range crops the cloud around the sensor,
+    # map_range bounds the grid itself.  The "grow:=true" configuration is the
+    # one map_range is meant for.
+    "input_range": "0.0",
+    "map_range": "0.0",
+    "evict_period": "10.0",
     # 0 keeps every measured cycle request-driven; > 0 also runs the planning
     # timer, which is what publishes the "path" topic the tf_gap run measures.
     "planning_freq": "0.0",
@@ -108,7 +123,6 @@ def generate_launch_description():
                 "map_frame": "map",
                 "robot_frame": "base_link",
                 "max_cloud_age": 5.0,
-                "input_range": 5.0,
                 "cell_size": 0.4,
                 "forget_factor": 0.1,
                 "cost_fields": ["geometric_cost"],
@@ -147,6 +161,13 @@ def generate_launch_description():
                 ),
                 "cloud_tf_timeout": ParameterValue(
                     cfg["cloud_tf_timeout"], value_type=float
+                ),
+                "input_range": ParameterValue(
+                    cfg["input_range"], value_type=float
+                ),
+                "map_range": ParameterValue(cfg["map_range"], value_type=float),
+                "evict_period": ParameterValue(
+                    cfg["evict_period"], value_type=float
                 ),
             },
         ],

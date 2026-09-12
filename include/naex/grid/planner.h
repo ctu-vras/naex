@@ -200,7 +200,13 @@ public:
 
     max_cloud_age_ =
         nh_->declare_parameter<float>("max_cloud_age", max_cloud_age_);
+    // P6a: crop of the input cloud around the sensor; <= 0 or NaN disables it.
     input_range_ = nh_->declare_parameter<float>("input_range", input_range_);
+    // P6b: bound of the grid itself; 0 (the default) keeps the pre-P6
+    // behaviour, i.e. an unbounded map that only ever grows.
+    map_range_ = nh_->declare_parameter<float>("map_range", map_range_);
+    evict_period_ =
+        nh_->declare_parameter<float>("evict_period", evict_period_);
 
     float cell_size = nh_->declare_parameter<float>("cell_size", 1.0f);
     float forget_factor = nh_->declare_parameter<float>("forget_factor", 1.0f);
@@ -323,6 +329,30 @@ public:
                 nav2_msgs::srv::ClearEntireCostmap::Response::SharedPtr res) {
               this->clearMap(req, res);
             });
+
+    if (input_range_ > 0.f) {
+      RCLCPP_INFO(nh_->get_logger(),
+                  "Input clouds are cropped to %.1f m around the sensor.",
+                  input_range_);
+    } else {
+      RCLCPP_INFO(nh_->get_logger(),
+                  "Input clouds are not cropped (input_range %.1f).",
+                  input_range_);
+    }
+    if (map_range_ > 0.f) {
+      RCLCPP_WARN(nh_->get_logger(),
+                  "Map is bounded (P6): cells farther than map_range %.1f m "
+                  "(%d cells) from the robot are evicted, at most every %.1f s "
+                  "or after %.1f m of travel. A goal outside the bound "
+                  "degrades to the nearest reachable cell.",
+                  map_range_, cellRadius(grid_, map_range_), evict_period_,
+                  kEvictMoveFraction * map_range_);
+    } else {
+      RCLCPP_INFO(nh_->get_logger(),
+                  "Map is unbounded (map_range %.1f): it grows for the whole "
+                  "mission.",
+                  map_range_);
+    }
 
     RCLCPP_INFO(nh_->get_logger(), "Node initialized.");
   }
@@ -558,15 +588,18 @@ public:
    *
    * One line per cycle, throttled to 1 Hz because planning_freq may be higher.
    * Format (single line):
-   *   perf plan: cells=<N> tf=<s> adhoc=<s> dijkstra=<s> map_cloud=<s>
-   *   scan_trav=<s> scan_reach=<s> total=<s>
+   *   perf plan: cells=<N> map_range=<m> tf=<s> adhoc=<s> dijkstra=<s>
+   *   map_cloud=<s> scan_trav=<s> scan_reach=<s> total=<s>
+   *
+   * map_range is the configured bound (0 = unbounded), repeated on every line
+   * so that a bag says which regime "cells" was measured in (P6).
    */
   void logPlanSummary() const {
     RCLCPP_INFO_THROTTLE(
         nh_->get_logger(), *nh_->get_clock(), 1000,
-        "perf plan: cells=%lu tf=%.4f adhoc=%.4f dijkstra=%.4f "
+        "perf plan: cells=%lu map_range=%.1f tf=%.4f adhoc=%.4f dijkstra=%.4f "
         "map_cloud=%.4f scan_trav=%.4f scan_reach=%.4f total=%.4f",
-        static_cast<unsigned long>(plan_timings_.grid_size),
+        static_cast<unsigned long>(plan_timings_.grid_size), map_range_,
         plan_timings_.start_tf, plan_timings_.adhoc, plan_timings_.dijkstra,
         plan_timings_.map_cloud, plan_timings_.scan_traversable,
         plan_timings_.scan_reachable, plan_timings_.total);
@@ -717,25 +750,130 @@ public:
       }
     }
 
+    // Sensor origin in the map frame: the centre of the input_range crop and,
+    // below, of the map_range eviction.  It is the sensor pose rather than the
+    // robot pose, which is what the crop should be relative to anyway and
+    // costs no extra TF lookup (P6).
+    const auto &t = cloud_to_map.transform.translation;
+    const Point2f origin(static_cast<float>(t.x), static_cast<float>(t.y));
+
     Timer t_loop;
     const size_t num_pts = num_points(*input);
+    size_t skipped = 0;
     for (size_t pt = 0; pt < num_pts; ++pt, ++x_it) {
-      Vec3 p(x_it[0], x_it[1], x_it[2]);
-      p = transform * p;
+      // Non-finite input must be rejected before the cast in pointToCell()
+      // (undefined behaviour, phantom cells), and the crop keeps the per-cloud
+      // work bounded by input_range instead of by the size of the cloud (P6a).
+      const Vec3 raw(x_it[0], x_it[1], x_it[2]);
+      bool keep = isValid(raw);
+      Point2f p(0.f, 0.f);
+      if (keep) {
+        const Vec3 q = transform * raw;
+        p = Point2f(q.x(), q.y());
+        keep = acceptInputPoint(grid_, p, origin, input_range_);
+      }
+      if (!keep) {
+        ++skipped;
+        // The cost iterators are advanced in lockstep with the position
+        // iterator; skipping that would misalign every following point.
+        for (size_t j = 0; j < levels.size(); ++j) {
+          ++cost_iters[j];
+        }
+        continue;
+      }
       for (size_t j = 0; j < levels.size(); ++j) {
         if (std::isfinite(cost_iters[j][0])) {
-          grid_.updatePointCost({p.x(), p.y()}, levels[j],
-                                weights[j] * cost_iters[j][0]);
+          grid_.updatePointCost(p, levels[j], weights[j] * cost_iters[j][0]);
         }
         ++cost_iters[j];
       }
     }
+    const double loop_seconds = t_loop.seconds_elapsed();
+
+    Timer t_evict;
+    const bool evicted = maybeEvictCells(origin);
     // One line per cloud; see logPlanSummary() for the planning-side line.
     RCLCPP_DEBUG(nh_->get_logger(),
-                 "perf cloud[%d]: pts=%lu tf=%.4f points=%.4f cells=%lu",
-                 cloud_index, static_cast<unsigned long>(num_pts), tf_seconds,
-                 t_loop.seconds_elapsed(),
+                 "perf cloud[%d]: pts=%lu skipped=%lu tf=%.4f points=%.4f "
+                 "evict=%.4f cells=%lu",
+                 cloud_index, static_cast<unsigned long>(num_pts),
+                 static_cast<unsigned long>(skipped), tf_seconds, loop_seconds,
+                 evicted ? t_evict.seconds_elapsed() : 0.0,
                  static_cast<unsigned long>(grid_.size()));
+  }
+
+  /**
+   * Drop the cells farther than map_range_ from @p robot, if it is time (P6b).
+   *
+   * Called once per ingested cloud, but the O(N) compaction only runs when one
+   * of three cheap triggers fires, so the amortised cost is negligible (a full
+   * pass over 216 k cells is ~0.4 ms):
+   *
+   *  * the grid holds more than kEvictSizeFactor times the number of cells the
+   *    bound retains -- this is the trigger that actually bounds N, whatever
+   *    the map is growing from;
+   *  * the robot has travelled more than kEvictMoveFraction * map_range_ since
+   *    the last eviction, which bounds how far past map_range_ the retained
+   *    region can extend;
+   *  * evict_period_ has elapsed, which bounds a grid growing around a robot
+   *    that stands still.
+   *
+   * Note that map_range_ bounds the map but not the ingestion: with
+   * input_range_ larger than map_range_ (or disabled) every cloud re-creates
+   * the cells the last eviction dropped.  That is correct but wasteful, so in
+   * production keep input_range_ <= map_range_.
+   *
+   * Everything that caches a CellId must be invalidated here; see the
+   * Eviction contract in grid.h.  Today that is only the ad-hoc dirty list,
+   * which is restored *before* the compaction (its CellIds are still valid at
+   * that point) so that no cell keeps a stale sidelobe cost forever.  P2's
+   * neighbour table must be rebuilt or remapped from ev.old_to_new right here.
+   *
+   * @return true if the compaction ran (whether or not it removed anything).
+   */
+  bool maybeEvictCells(const Point2f &robot) {
+    if (!(map_range_ > 0.f) || grid_.empty()) {
+      return false;
+    }
+    if (!inCellRange(grid_, robot)) {
+      RCLCPP_WARN_THROTTLE(nh_->get_logger(), *nh_->get_clock(), 5000,
+                           "Not evicting: robot position (%.1f, %.1f) is not a "
+                           "valid grid cell.",
+                           robot.x, robot.y);
+      return false;
+    }
+    const double now = nh_->get_clock()->now().seconds();
+    const float dx = robot.x - last_evict_at_.x;
+    const float dy = robot.y - last_evict_at_.y;
+    const bool moved = !std::isfinite(last_evict_at_.x) ||
+                       !std::isfinite(last_evict_at_.y) ||
+                       std::sqrt(dx * dx + dy * dy) >=
+                           kEvictMoveFraction * map_range_;
+    // Not (now - last < period), so that a clock jump backwards evicts rather
+    // than blocks eviction forever.
+    const bool due = !(now - last_evict_time_ < evict_period_);
+    const bool grown =
+        static_cast<double>(grid_.size()) >
+        kEvictSizeFactor * boundedCellCount(cellRadius(grid_, map_range_));
+    if (!moved && !due && !grown) {
+      return false;
+    }
+
+    // The dirty list holds CellIds; replay it while they still mean something.
+    clearAdHocLayer();
+    const Eviction ev = evictOutsideRange(grid_, robot, map_range_);
+    last_evict_at_ = robot;
+    last_evict_time_ = now;
+    if (ev.changed()) {
+      RCLCPP_INFO_THROTTLE(nh_->get_logger(), *nh_->get_clock(), 1000,
+                           "perf evict: map_range=%.1f center=(%.1f, %.1f) "
+                           "cells_before=%lu cells_after=%lu removed=%lu",
+                           map_range_, robot.x, robot.y,
+                           static_cast<unsigned long>(ev.before),
+                           static_cast<unsigned long>(ev.after),
+                           static_cast<unsigned long>(ev.removed));
+    }
+    return true;
   }
 
   void receiveCloudSafe(
@@ -872,9 +1010,32 @@ protected:
   std::vector<double> cloud_weights_;
   std::vector<long int> cloud_levels_;
   float max_cloud_age_{5.0};
-  // TODO(B8/P6): declared and logged but not used to crop the input yet.
+  /// Radius (m) around the sensor outside which input points are discarded;
+  /// <= 0 or NaN disables the crop (P6a).  Bounds the per-cloud work, not the
+  /// grid: driving on keeps creating cells.
   float input_range_{10.0};
   bool sensor_data_qos_{false};
+
+  // Map bound (P6b).  Radius (m) around the robot outside which cells are
+  // evicted; 0 (the default) means the pre-P6 behaviour, an unbounded map.
+  // The bound is a square (Chebyshev in cells), so it caps the grid at
+  // (2*ceil(map_range/cell_size) + 1)^2 cells.
+  float map_range_{0.0};
+  /// Upper bound (s) on the interval between two evictions while the robot
+  /// stands still; <= 0 evicts once per ingested cloud.  Eviction also
+  /// triggers on movement and on growth, see kEvictMoveFraction /
+  /// kEvictSizeFactor.
+  float evict_period_{10.0};
+  /// Fraction of map_range_ the robot may travel between two evictions; it
+  /// bounds the overshoot of the cap to (1 + fraction) * map_range_.
+  static constexpr float kEvictMoveFraction = 0.25f;
+  /// How far the cell count may exceed what the bound retains before an
+  /// eviction is forced; this is what makes the cap on the grid size hold
+  /// however fast the map grows.
+  static constexpr double kEvictSizeFactor = 1.5;
+  /// Centre and time of the last eviction; NaN/0 until the first one.
+  Point2f last_evict_at_{};
+  double last_evict_time_{0.0};
 
   // Grid
   Grid grid_{};

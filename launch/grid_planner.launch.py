@@ -22,7 +22,29 @@ def generate_launch_description():
                         # once-per-cycle robot pose lookup only.
                         "cloud_tf_timeout": 0.05,
                         "tf_timeout": 0.5,
+                        # Crop of the input cloud around the sensor (P6a).
+                        # Bounds the per-cloud work; it does not bound the map,
+                        # because cells are never removed by it.
                         "input_range": 5.0,
+                        # Bound of the map itself (P6b): cells farther than
+                        # map_range from the robot are dropped.  0 keeps the
+                        # historical behaviour, an unbounded map that grows for
+                        # the whole mission (215 k cells and 0.9 s of Dijkstra
+                        # after 30 s of driving in the benchmark).
+                        # Trade-off: a smaller map_range caps cells, memory and
+                        # planning time (pi*r^2/cell_size^2), but the planner
+                        # forgets the topology outside it, so a goal further
+                        # away degrades to the nearest reachable cell and a
+                        # detour around an obstacle larger than map_range can
+                        # be forgotten while the robot is still driving it.
+                        # Rule of thumb: several times the largest obstacle the
+                        # robot must circumnavigate; 100.0 is a safe first
+                        # value at cell_size 0.4, tune down toward 50.0.
+                        "map_range": 0.0,
+                        # Upper bound on the interval between two evictions
+                        # while the robot stands still; it also evicts after
+                        # 0.25 * map_range of travel.
+                        "evict_period": 10.0,
                         "cell_size": 0.4,
                         "forget_factor": 0.1,
                         "cost_fields": ["geometric_cost"],

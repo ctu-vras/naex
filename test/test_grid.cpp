@@ -558,3 +558,364 @@ TEST(Planning, NearestReachableCellWithUnreachableGoal) {
       });
   EXPECT_EQ(unreachable, naex::grid::INVALID_CELL_ID);
 }
+
+// --- P6: input guards and the map bound ------------------------------------
+
+namespace {
+
+/// The per-point acceptance of Planner::receiveCloud(), without ROS: insert
+/// every accepted point of @p points into @p grid on layer 0.  Mirrors the
+/// loop in planner.h, so it pins the ingestion contract rather than the helper.
+size_t ingestPoints(Grid &grid, const std::vector<Point2f> &points,
+                    const Point2f &origin, float input_range) {
+  size_t skipped = 0;
+  for (const Point2f &p : points) {
+    if (!naex::grid::acceptInputPoint(grid, p, origin, input_range)) {
+      ++skipped;
+      continue;
+    }
+    grid.updatePointCost(p, 0, 1.f);
+  }
+  return skipped;
+}
+
+}  // namespace
+
+TEST(InputGuard, NonFinitePointsCreateNoCell) {
+  // Casting NaN/Inf to int16_t is undefined behaviour and used to create a
+  // phantom cell wherever the conversion happened to land (B8).
+  const float kInf = std::numeric_limits<float>::infinity();
+  Grid grid(0.4f, 1.f, Costs(0.f, 0.f, 0.f, 0.f));
+  const std::vector<Point2f> bad = {
+      Point2f(kNaN, 0.f),  Point2f(0.f, kNaN),  Point2f(kNaN, kNaN),
+      Point2f(kInf, 0.f),  Point2f(0.f, -kInf), Point2f(-kInf, kInf)};
+  EXPECT_EQ(ingestPoints(grid, bad, Point2f(0.f, 0.f), 0.f), bad.size());
+  EXPECT_EQ(grid.size(), 0u);
+  EXPECT_TRUE(grid.empty());
+
+  // One good point still lands, so the guard is not simply rejecting all.
+  EXPECT_EQ(ingestPoints(grid, {Point2f(1.f, 1.f)}, Point2f(0.f, 0.f), 0.f),
+            0u);
+  EXPECT_EQ(grid.size(), 1u);
+}
+
+TEST(InputGuard, OutOfInt16RangePointsCreateNoCell) {
+  // At cell_size 0.4 the int16_t cell index runs out at +-13106.8 m.
+  Grid grid(0.4f, 1.f, Costs(0.f, 0.f, 0.f, 0.f));
+  const float limit = naex::grid::maxCellCoord(grid.cellSize());
+  EXPECT_FLOAT_EQ(limit, 32767.f * 0.4f);
+
+  const std::vector<Point2f> outside = {
+      Point2f(limit, 0.f),         Point2f(-limit, 0.f),
+      Point2f(0.f, limit),         Point2f(0.f, -limit),
+      Point2f(2.f * limit, 0.f),   Point2f(0.f, -1e9f)};
+  EXPECT_EQ(ingestPoints(grid, outside, Point2f(0.f, 0.f), 0.f),
+            outside.size());
+  EXPECT_EQ(grid.size(), 0u);
+
+  // Just inside the limit is still accepted, and lands where it should.
+  const float inside = std::nextafter(limit, 0.f);
+  EXPECT_EQ(ingestPoints(grid, {Point2f(inside, -inside)}, Point2f(0.f, 0.f),
+                         0.f),
+            0u);
+  ASSERT_EQ(grid.size(), 1u);
+  EXPECT_EQ(grid.cell(0).x, 32766);
+  EXPECT_EQ(grid.cell(0).y, -32767);
+}
+
+TEST(InputGuard, InputRangeCropKeepsExactlyTheDisc) {
+  // 1 m lattice over [-10, 10]^2, crop radius 5 m around (2, -1): exactly the
+  // lattice points with |p - origin| <= 5 (boundary inclusive) may create a
+  // cell, and each must land in its own cell.
+  const Point2f origin(2.f, -1.f);
+  const float range = 5.f;
+  std::vector<Point2f> points;
+  std::set<std::pair<int, int>> expected;
+  for (int x = -10; x <= 10; ++x) {
+    for (int y = -10; y <= 10; ++y) {
+      const Point2f p(static_cast<float>(x), static_cast<float>(y));
+      points.push_back(p);
+      const float dx = p.x - origin.x;
+      const float dy = p.y - origin.y;
+      if (dx * dx + dy * dy <= range * range) {
+        expected.insert({x, y});
+      }
+    }
+  }
+  ASSERT_EQ(points.size(), 441u);
+  ASSERT_EQ(expected.size(), 81u) << "lattice points inside a radius 5 disc";
+
+  Grid grid(1.f, 1.f, Costs(0.f, 0.f, 0.f, 0.f));
+  EXPECT_EQ(ingestPoints(grid, points, origin, range),
+            points.size() - expected.size());
+  ASSERT_EQ(grid.size(), expected.size());
+  std::set<std::pair<int, int>> got;
+  for (naex::grid::CellId v = 0; v < grid.size(); ++v) {
+    got.insert({grid.cell(v).x, grid.cell(v).y});
+  }
+  EXPECT_EQ(got, expected);
+
+  // A boundary point exactly at range is kept; a hair further out is not.
+  EXPECT_TRUE(naex::grid::acceptInputPoint(
+      grid, Point2f(origin.x + range, origin.y), origin, range));
+  EXPECT_FALSE(naex::grid::acceptInputPoint(
+      grid, Point2f(std::nextafter(origin.x + range, 100.f), origin.y), origin,
+      range));
+
+  // range <= 0 and NaN disable the crop; every lattice point then lands.
+  for (const float off : {0.f, -1.f, kNaN}) {
+    Grid all(1.f, 1.f, Costs(0.f, 0.f, 0.f, 0.f));
+    EXPECT_EQ(ingestPoints(all, points, origin, off), 0u) << "range " << off;
+    EXPECT_EQ(all.size(), points.size()) << "range " << off;
+  }
+  // A broken (non-finite) origin must not silently empty the map either.
+  Grid no_origin(1.f, 1.f, Costs(0.f, 0.f, 0.f, 0.f));
+  EXPECT_EQ(ingestPoints(no_origin, points, Point2f(kNaN, kNaN), range), 0u);
+  EXPECT_EQ(no_origin.size(), points.size());
+}
+
+TEST(Eviction, EvictOutsideKeepsExactlyTheSquare) {
+  // 20x20 unit cells, evict around (10, 10) with a Chebyshev radius of 3:
+  // exactly the 7x7 square [7, 13]^2 survives, renumbered but in order, and
+  // every cell keeps its own costs.
+  Grid grid = makeDenseGrid(20);
+  for (naex::grid::CellId v = 0; v < grid.size(); ++v) {
+    grid.costs(v)[0] = static_cast<Cost>(grid.cell(v).x * 100 + grid.cell(v).y);
+  }
+  const uint64_t version_before = grid.version();
+  std::vector<Cell> cells_before;
+  std::vector<Cost> costs_before;
+  for (naex::grid::CellId v = 0; v < grid.size(); ++v) {
+    cells_before.push_back(grid.cell(v));
+    costs_before.push_back(grid.costs(v)[0]);
+  }
+
+  const naex::grid::Eviction ev = grid.evictOutside(Cell(10, 10), 3);
+  EXPECT_EQ(ev.before, 400u);
+  EXPECT_EQ(ev.after, 49u);
+  EXPECT_EQ(ev.removed, 351u);
+  EXPECT_TRUE(ev.changed());
+  EXPECT_GT(ev.version, version_before);
+  EXPECT_EQ(ev.version, grid.version());
+  ASSERT_EQ(ev.old_to_new.size(), 400u);
+  EXPECT_EQ(grid.size(), 49u);
+
+  std::set<std::pair<int, int>> expected;
+  for (int x = 7; x <= 13; ++x) {
+    for (int y = 7; y <= 13; ++y) {
+      expected.insert({x, y});
+    }
+  }
+  std::set<std::pair<int, int>> got;
+  for (naex::grid::CellId v = 0; v < grid.size(); ++v) {
+    got.insert({grid.cell(v).x, grid.cell(v).y});
+    // Ids are contiguous and the cell -> id map agrees with id -> cell.
+    EXPECT_EQ(grid.cellId(grid.cell(v)), v) << "cell " << v;
+    // Costs moved with their cell.
+    EXPECT_FLOAT_EQ(grid.costs(v)[0],
+                    static_cast<Cost>(grid.cell(v).x * 100 + grid.cell(v).y));
+  }
+  EXPECT_EQ(got, expected);
+
+  // The mapping describes exactly what happened, for everything that caches a
+  // CellId (P2's neighbour table).
+  naex::grid::CellId last = 0;
+  bool first = true;
+  for (naex::grid::CellId v = 0; v < ev.before; ++v) {
+    const Cell &c = cells_before[v];
+    const bool kept = std::abs(c.x - 10) <= 3 && std::abs(c.y - 10) <= 3;
+    if (!kept) {
+      EXPECT_EQ(ev.old_to_new[v], naex::grid::INVALID_CELL_ID) << "old " << v;
+      continue;
+    }
+    const naex::grid::CellId w = ev.old_to_new[v];
+    ASSERT_NE(w, naex::grid::INVALID_CELL_ID) << "old " << v;
+    EXPECT_LE(w, v) << "the compaction never moves a cell up";
+    if (!first) {
+      EXPECT_GT(w, last) << "relative order is preserved";
+    }
+    last = w;
+    first = false;
+    EXPECT_EQ(grid.cell(w).x, c.x);
+    EXPECT_EQ(grid.cell(w).y, c.y);
+    EXPECT_FLOAT_EQ(grid.costs(w)[0], costs_before[v]);
+  }
+  // No stale entry survived in the cell -> id map.
+  EXPECT_EQ(grid.findCell(Cell(0, 0)), naex::grid::INVALID_CELL_ID);
+  EXPECT_EQ(grid.findCell(Cell(14, 10)), naex::grid::INVALID_CELL_ID);
+}
+
+TEST(Eviction, RadiusZeroAndRadiusLargerThanTheGrid) {
+  Grid grid = makeDenseGrid(20);
+  const uint64_t version_before = grid.version();
+
+  // A radius larger than the grid keeps everything and renumbers nothing, so
+  // every cached CellId stays valid and the version does not move.
+  const naex::grid::Eviction all = grid.evictOutside(Cell(10, 10), 1000);
+  EXPECT_EQ(all.before, 400u);
+  EXPECT_EQ(all.after, 400u);
+  EXPECT_EQ(all.removed, 0u);
+  EXPECT_FALSE(all.changed());
+  EXPECT_TRUE(all.old_to_new.empty());
+  EXPECT_EQ(all.version, version_before);
+  EXPECT_EQ(grid.version(), version_before);
+  EXPECT_EQ(grid.cellId(Cell(19, 19)), 399u);
+
+  // Radius 0 keeps exactly the centre cell.
+  const naex::grid::Eviction one = grid.evictOutside(Cell(10, 10), 0);
+  EXPECT_EQ(one.after, 1u);
+  EXPECT_EQ(grid.size(), 1u);
+  EXPECT_EQ(grid.cell(0).x, 10);
+  EXPECT_EQ(grid.cell(0).y, 10);
+  EXPECT_FLOAT_EQ(grid.costs(0)[0], 0.f);
+  EXPECT_GT(grid.version(), version_before);
+
+  // A negative radius empties the grid (it is not reachable from the planner,
+  // which never evicts with map_range <= 0).
+  const naex::grid::Eviction none = grid.evictOutside(Cell(10, 10), -1);
+  EXPECT_EQ(none.after, 0u);
+  EXPECT_TRUE(grid.empty());
+}
+
+TEST(Eviction, MapRangeZeroIsANoOp) {
+  // The planner's gate: map_range <= 0 or NaN must leave the grid completely
+  // alone, i.e. reproduce the pre-P6 unbounded map.
+  for (const float range : {0.f, -10.f, kNaN}) {
+    Grid grid = makeDenseGrid(20, 0.4f);
+    const uint64_t version_before = grid.version();
+    const naex::grid::Eviction ev =
+        naex::grid::evictOutsideRange(grid, Point2f(0.2f, 0.2f), range);
+    EXPECT_EQ(ev.before, 400u) << "range " << range;
+    EXPECT_EQ(ev.after, 400u) << "range " << range;
+    EXPECT_EQ(ev.removed, 0u) << "range " << range;
+    EXPECT_FALSE(ev.changed()) << "range " << range;
+    EXPECT_TRUE(ev.old_to_new.empty()) << "range " << range;
+    EXPECT_EQ(ev.version, version_before) << "range " << range;
+    EXPECT_EQ(grid.size(), 400u) << "range " << range;
+    EXPECT_EQ(grid.version(), version_before) << "range " << range;
+  }
+
+  // So does a centre that is not a valid cell (a broken robot transform).
+  Grid grid = makeDenseGrid(20, 0.4f);
+  const uint64_t version_before = grid.version();
+  EXPECT_FALSE(
+      naex::grid::evictOutsideRange(grid, Point2f(kNaN, 0.f), 5.f).changed());
+  EXPECT_FALSE(naex::grid::evictOutsideRange(grid, Point2f(1e9f, 0.f), 5.f)
+                   .changed());
+  EXPECT_EQ(grid.size(), 400u);
+  EXPECT_EQ(grid.version(), version_before);
+}
+
+TEST(Eviction, MapRangeInMetresBoundsTheGrid) {
+  // 40x40 cells of 0.4 m centred on the origin; map_range 3 m around the robot
+  // cell keeps the square of ceil(3 / 0.4) = 8 cells around it, i.e. 17x17.
+  Grid grid(0.4f, 1.f, Costs(0.f, 0.f, 0.f, 0.f));
+  for (int16_t x = -20; x < 20; ++x) {
+    for (int16_t y = -20; y < 20; ++y) {
+      grid.cellId(Cell(x, y));
+    }
+  }
+  ASSERT_EQ(grid.size(), 1600u);
+  EXPECT_EQ(naex::grid::cellRadius(grid, 3.f), 8);
+
+  const Point2f robot(0.1f, 0.1f);  // cell (0, 0)
+  const naex::grid::Eviction ev =
+      naex::grid::evictOutsideRange(grid, robot, 3.f);
+  EXPECT_EQ(ev.after, 17u * 17u);
+  EXPECT_EQ(grid.size(), 17u * 17u);
+  for (naex::grid::CellId v = 0; v < grid.size(); ++v) {
+    EXPECT_LE(std::abs(grid.cell(v).x), 8);
+    EXPECT_LE(std::abs(grid.cell(v).y), 8);
+    // The retained square contains the whole map_range disc.
+    EXPECT_EQ(grid.cellId(grid.cell(v)), v);
+  }
+  for (int16_t x = -7; x <= 7; ++x) {
+    EXPECT_NE(grid.findCell(Cell(x, 7)), naex::grid::INVALID_CELL_ID)
+        << "cell (" << x << ", 7) is within 3 m and must survive";
+  }
+
+  // An eviction that removes nothing must not renumber: repeat it.
+  const uint64_t version = grid.version();
+  const naex::grid::Eviction again =
+      naex::grid::evictOutsideRange(grid, robot, 3.f);
+  EXPECT_FALSE(again.changed());
+  EXPECT_EQ(grid.version(), version);
+}
+
+TEST(Eviction, PlanningOnACompactedGridIsExact) {
+  // The 20x20 gap fixture of Planning.TwentyByTwentyWithGapExactCost, but
+  // reached by compacting a 30x30 grid down to the 20x20 core: the plan after
+  // the eviction must be bit for bit the plan on the grid built that way.
+  Grid grid = makeDenseGrid(30);
+  // Full-height wall on column x = 10 except the gap at y = 18, 19, so the
+  // route is unambiguous both before and after the eviction.
+  for (int16_t y = 0; y < 30; ++y) {
+    if (y == 18 || y == 19) {
+      continue;
+    }
+    grid.cellCosts(Cell(10, y))[0] = 5.f;
+  }
+  ASSERT_EQ(grid.size(), 900u);
+
+  const naex::grid::Eviction ev =
+      grid.eraseCells([&grid](naex::grid::CellId v) {
+        return grid.cell(v).x < 20 && grid.cell(v).y < 20;
+      });
+  ASSERT_EQ(ev.after, 400u);
+  ASSERT_EQ(ev.removed, 500u) << "every CellId is renumbered";
+  ASSERT_EQ(grid.size(), 400u);
+
+  const Costs max_costs(1.f);
+  const VertexId start = grid.cellId(Cell(0, 0));
+  const VertexId goal = grid.cellId(Cell(19, 0));
+  const ShortestPaths sp(grid, start, 8, max_costs);
+  const float expected = 19.f * std::sqrt(2.f) + 17.f;
+  EXPECT_NEAR(sp.pathCost(goal), expected, 1e-3f);
+  EXPECT_FALSE(std::isfinite(sp.pathCost(grid.cellId(Cell(10, 5)))));
+
+  size_t vertices = 1;
+  VertexId v = goal;
+  while (v != start && vertices <= grid.size()) {
+    EXPECT_FLOAT_EQ(grid.costs(v)[0], 0.f) << "path entered a blocked cell";
+    v = sp.predecessor(v);
+    ++vertices;
+  }
+  ASSERT_EQ(v, start);
+  EXPECT_EQ(vertices, 37u);
+
+  // The wall is still where it was, addressed by cell rather than by id.
+  for (int16_t y = 0; y <= 17; ++y) {
+    EXPECT_FLOAT_EQ(grid.cellCosts(Cell(10, y))[0], 5.f) << "y = " << y;
+  }
+  EXPECT_EQ(grid.findCell(Cell(20, 0)), naex::grid::INVALID_CELL_ID);
+}
+
+TEST(Eviction, EraseCellsOnAnEmptyGrid) {
+  Grid grid(0.4f);
+  const naex::grid::Eviction ev = grid.evictOutside(Cell(0, 0), 3);
+  EXPECT_EQ(ev.before, 0u);
+  EXPECT_EQ(ev.after, 0u);
+  EXPECT_FALSE(ev.changed());
+  EXPECT_TRUE(grid.empty());
+}
+
+TEST(Grid, VersionBumpsOnStructuralChangesOnly) {
+  Grid grid(1.f, 1.f, Costs(0.f, 0.f, 0.f, 0.f));
+  const uint64_t v0 = grid.version();
+  grid.cellId(Cell(0, 0));
+  const uint64_t v1 = grid.version();
+  EXPECT_GT(v1, v0);
+  // An existing cell is not created again.
+  grid.cellId(Cell(0, 0));
+  EXPECT_EQ(grid.version(), v1);
+  // Reads and cost updates leave the numbering alone.
+  grid.updateCellCost(Cell(0, 0), 0, 3.f);
+  EXPECT_EQ(grid.version(), v1);
+  EXPECT_EQ(grid.size(), 1u);
+  // ... but a cost update that creates a cell does bump it.
+  grid.updateCellCost(Cell(5, 5), 0, 3.f);
+  EXPECT_GT(grid.version(), v1);
+  const uint64_t v2 = grid.version();
+  grid.clear();
+  EXPECT_GT(grid.version(), v2);
+}
