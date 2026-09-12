@@ -1,46 +1,62 @@
 <?xml version="1.0"?>
-<package format="2">
-    <name>naex</name>
-    <version>0.0.1</version>
-    <description>Robot navigation and exploration.</description>
-    <maintainer email="tpetricek@gmail.com">Tomas Petricek</maintainer>
-    <maintainer email="vlkjan6@fel.cvut.cz">Jan Vlk</maintainer>
-    <license>BSD</license>
-    <url type="website">https://github.com/tpet/naex</url>
-    <author email="tpetricek@gmail.com">Tomas Petricek</author>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>naex</name>
+  <version>0.0.1</version>
+  <description>Robot navigation and exploration.</description>
+  <maintainer email="tpetricek@gmail.com">Tomas Petricek</maintainer>
+  <maintainer email="vlkjan6@fel.cvut.cz">Jan Vlk</maintainer>
+  <license>BSD</license>
+  <url type="website">https://github.com/tpet/naex</url>
+  <author email="tpetricek@gmail.com">Tomas Petricek</author>
 
-    <buildtool_depend>ament_cmake</buildtool_depend>    
+  <buildtool_depend>ament_cmake</buildtool_depend>
 
-    <build_depend>boost</build_depend>
-    <build_depend>eigen</build_depend>
-    <build_depend>geometry_msgs</build_depend>
-    <build_depend>libflann-dev</build_depend>
-    <build_depend>lz4</build_depend>
-    <build_depend>nav_msgs</build_depend>
-    <build_depend>rclcpp</build_depend>
-    <build_depend>sensor_msgs</build_depend>
-    <build_depend>std_msgs</build_depend>
-    <build_depend>tf2</build_depend>
-    <build_depend>tf2_eigen</build_depend>
-    <build_depend>tf2_ros</build_depend>
-    <build_depend>tf2_geometry_msgs</build_depend>
-    <build_depend>visualization_msgs</build_depend>
+  <depend>boost</depend>
+  <depend>eigen</depend>
+  <depend>geometry_msgs</depend>
+  <!-- map.h and traversability.h use FLANN; its serializer needs liblz4. -->
+  <depend>libflann-dev</depend>
+  <depend>liblz4-dev</depend>
+  <depend>nav2_msgs</depend>
+  <depend>nav_msgs</depend>
+  <depend>rclcpp</depend>
+  <depend>rclcpp_components</depend>
+  <depend>sensor_msgs</depend>
+  <depend>std_msgs</depend>
+  <depend>tf2</depend>
+  <depend>tf2_eigen</depend>
+  <depend>tf2_geometry_msgs</depend>
+  <depend>tf2_ros</depend>
+  <!-- grid_planner publishes frontier markers on map_frontiers. -->
+  <depend>visualization_msgs</depend>
 
-    <exec_depend>boost</exec_depend>
-    <exec_depend>geometry_msgs</exec_depend>
-    <exec_depend>libflann-dev</exec_depend>
-    <exec_depend>lz4</exec_depend>
-    <exec_depend>nav_msgs</exec_depend>
-    <exec_depend>rclcpp</exec_depend>
-    <exec_depend>sensor_msgs</exec_depend>
-    <exec_depend>std_msgs</exec_depend>
-    <exec_depend>tf2</exec_depend>
-    <exec_depend>tf2_ros</exec_depend>
-    <exec_depend>tf2_eigen</exec_depend>
-    <exec_depend>tf2_geometry_msgs</exec_depend>
-    <exec_depend>visualization_msgs</exec_depend>
+  <!-- Python nodes (scripts/*.py). -->
+  <exec_depend>python3-numpy</exec_depend>
+  <exec_depend>python3-scipy</exec_depend>
+  <exec_depend>rclpy</exec_depend>
+  <!-- ros2_numpy is a source package of this workspace (src/ros2_numpy);
+       it is not in the public rosdep index. -->
+  <exec_depend>ros2_numpy</exec_depend>
+  <exec_depend>tf2_ros_py</exec_depend>
+  <exec_depend>tf_transformations</exec_depend>
 
-    <export>
-        <build_type>ament_cmake</build_type>
-    </export>
+  <!-- Launch files. -->
+  <exec_depend>ament_index_python</exec_depend>
+  <exec_depend>launch</exec_depend>
+  <exec_depend>launch_ros</exec_depend>
+  <exec_depend>pcl_ros</exec_depend>
+  <exec_depend>point_cloud_transport</exec_depend>
+  <exec_depend>ros2bag</exec_depend>
+  <exec_depend>rosbag2_transport</exec_depend>
+  <exec_depend>rviz2</exec_depend>
+  <exec_depend>topic_tools</exec_depend>
+
+  <test_depend>ament_cmake_gtest</test_depend>
+  <test_depend>ament_lint_auto</test_depend>
+  <test_depend>ament_lint_common</test_depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
 </package>

@@ -5,6 +5,7 @@
 #include <geometry_msgs/msg/transform_stamped.hpp>
 #include <sensor_msgs/msg/point_cloud2.hpp>
 #include <sensor_msgs/point_cloud2_iterator.hpp>
+#include "naex/clouds.h"
 #include <tf2_eigen/tf2_eigen.hpp>
 #include <type_traits>
 
@@ -29,7 +30,7 @@ void transform_cloud(const sensor_msgs::msg::PointCloud2 &input,
   }
 }
 
-void transform_to_pose(const geometry_msgs::msg::Transform &tf,
+inline void transform_to_pose(const geometry_msgs::msg::Transform &tf,
                        geometry_msgs::msg::Pose &pose) {
   pose.position.x = tf.translation.x;
   pose.position.y = tf.translation.y;
@@ -37,7 +38,8 @@ void transform_to_pose(const geometry_msgs::msg::Transform &tf,
   pose.orientation = tf.rotation;
 }
 
-void transform_to_pose(const geometry_msgs::msg::TransformStamped &tf,
+inline void transform_to_pose(
+    const geometry_msgs::msg::TransformStamped &tf,
                        geometry_msgs::msg::PoseStamped &pose) {
   pose.header = tf.header;
   transform_to_pose(tf.transform, pose.pose);

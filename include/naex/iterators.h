@@ -1,7 +1,4 @@
-
-#ifndef NAEX_ITERATORS_H
-#define NAEX_ITERATORS_H
-
+#pragma once
 #include "naex/types.h"
 
 namespace naex {
@@ -113,5 +110,3 @@ typedef ValueIterator<Vertex> VertexIter;
 typedef ValueIterator<Edge> EdgeIter;
 
 } // namespace naex
-
-#endif // NAEX_ITERATORS_H

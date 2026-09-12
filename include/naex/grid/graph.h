@@ -5,6 +5,7 @@
 #include <boost/graph/graph_traits.hpp>
 #include <boost/graph/properties.hpp>
 #include <boost/property_map/property_map.hpp>
+#include <limits>
 #include <vector>
 
 namespace naex {
@@ -16,240 +17,247 @@ typedef CellId EdgeId;
 typedef ValueIterator<VertexId> VertexIter;
 typedef ValueIterator<EdgeId> EdgeIter;
 
-Cell neighbor4(const Cell &source, int i) {
-  Cell target = source;
-  switch (i) {
-  case 0:
-    target.x += 1;
-    break;
-  case 1:
-    target.y += 1;
-    break;
-  case 2:
-    target.x -= 1;
-    break;
-  case 3:
-    target.y -= 1;
-    break;
-  default:
-    assert(false);
-  }
-  return target;
-}
+/// Sentinel for "no vertex".  Distinct from naex::INVALID_VERTEX, which is a
+/// signed Index and compares badly against the unsigned VertexId.
+inline constexpr VertexId INVALID_VERTEX_ID =
+    std::numeric_limits<VertexId>::max();
 
-Cell neighbor8(const Cell &source, int i) {
-  Cell target = source;
-  switch (i) {
-  case 0:
-    target.x += 1;
-    break;
-  case 1:
-    target.x += 1;
-    target.y += 1;
-    break;
-  case 2:
-    target.y += 1;
-    break;
-  case 3:
-    target.x -= 1;
-    target.y += 1;
-    break;
-  case 4:
-    target.x -= 1;
-    break;
-  case 5:
-    target.x -= 1;
-    target.y -= 1;
-    break;
-  case 6:
-    target.y -= 1;
-    break;
-  case 7:
-    target.x += 1;
-    target.y -= 1;
-    break;
-  default:
-    assert(false);
-  }
-  return target;
-}
+// neighbor4(), neighbor8(), distance8() and kDist8 moved to grid.h with P2:
+// Grid itself has to resolve neighbours now that it keeps the flat neighbour
+// table.  They are still naex::grid::neighbor8 etc. for every caller.
 
-Cost distance8(int i) {
-  switch (i) {
-  case 0:
-  case 2:
-  case 4:
-  case 6:
-    return 1;
-  case 1:
-  case 3:
-  case 5:
-  case 7:
-    return std::sqrt(2.f);
-  default:
-    assert(false);
-  }
-  return 0.0;
-}
+/**
+ * Boost.Graph adapter over a Grid, with the neighbourhood fixed at compile
+ * time (P2).
+ *
+ * @tparam N 4 or 8.  A compile-time N turns the per-edge `e / N` and `e % N`
+ * of the Dijkstra inner loop into a shift and a mask, and drops the
+ * 8-neighbourhood distance multiplication entirely for N == 4.  The runtime
+ * `neighborhood` parameter selects between the two instantiations in
+ * ShortestPaths, so nothing above this class has to know.
+ *
+ * Edges are implicit: edge e belongs to vertex `e / N` and is its `e % N`-th
+ * neighbour direction.  Targets come from Grid's flat neighbour table, so the
+ * inner loop does no hash lookup at all; the per-vertex total cost (INF for a
+ * cell that is out of bounds) is cached here, so it does not recompute
+ * Costs::total() either.  The cache is built once in the constructor and is
+ * therefore only valid while the grid's costs do not change — construct the
+ * graph after the ad-hoc layer has been written, never before.
+ *
+ * https://www.boost.org/doc/libs/1_75_0/libs/graph/doc/adjacency_list.html
+ */
+template <uint8_t N> class GraphN {
+  static_assert(N == 4 || N == 8, "neighborhood must be 4 or 8");
 
-// Also used in planner.h, so keep it outside of Graph class.
-bool costsInBounds(const Costs &costs, const Costs &max_costs_absolute) {
-  for (size_t i = 0; i < 4; ++i) {
-    // Skip if one of the max cost is invalid.
-    if (!std::isfinite(max_costs_absolute[i])) {
-      continue;
-    }
-    if (!(costs[i] <= max_costs_absolute[i])) {
-      return false;
-    }
-  }
-  return true;
-}
-
-/** https://www.boost.org/doc/libs/1_75_0/libs/graph/doc/adjacency_list.html */
-class Graph {
 public:
   static constexpr Cost INF = std::numeric_limits<Cost>::infinity();
+  /// Compile-time neighbourhood, 4 or 8.
+  static constexpr uint8_t kNeighborhood = N;
 
-  Graph(const Grid &grid, const uint8_t neighborhood = 8,
-        const Costs &max_costs_absolute = Costs())
-      : grid_(grid), neighborhood_(neighborhood), max_costs_absolute_(max_costs_absolute) {
-    assert(neighborhood == 4 || neighborhood == 8);
+  explicit GraphN(const Grid &grid, const Costs &max_costs = Costs())
+      : grid_(grid), max_costs_(max_costs), cell_size_(grid.cellSize()) {
+    const size_t n = grid_.size();
+    total_.resize(n);
+    for (size_t v = 0; v < n; ++v) {
+      const Costs &c = grid_.costs(static_cast<CellId>(v));
+      // An out-of-bounds cell is stored as INF rather than in a second flag
+      // array: 1 + (INF + x) / 2, scaled, is still exactly INF, which is what
+      // cost() returned for it before, and the inner loop keeps one branch.
+      total_[v] = grid::costsInBounds(c, max_costs_)
+                      ? c.total()
+                      : std::numeric_limits<Cost>::infinity();
+    }
   }
-  Graph() : Graph(Grid()) {}
+  /// Compatibility overload; @p neighborhood must be N.
+  GraphN(const Grid &grid, const uint8_t neighborhood,
+         const Costs &max_costs = Costs())
+      : GraphN(grid, max_costs) {
+    assert(neighborhood == N);
+    (void)neighborhood;
+  }
+
   inline VertexId num_vertices() const { return grid_.size(); }
-  inline EdgeId num_edges() const { return neighborhood_ * num_vertices(); }
+  inline EdgeId num_edges() const { return N * num_vertices(); }
   inline std::pair<VertexIter, VertexIter> vertices() const {
     return {VertexIter(0), VertexIter(num_vertices())};
   }
   inline std::pair<EdgeIter, EdgeIter> out_edges(const VertexId &u) const {
-    return {EdgeIter(neighborhood_ * u), EdgeIter(neighborhood_ * (u + 1))};
+    return {EdgeIter(N * u), EdgeIter(N * (u + 1))};
   }
-  inline EdgeId out_degree(const VertexId &u) const { return neighborhood_; }
-  inline VertexId source(const EdgeId &e) const { return e / neighborhood_; }
-  inline VertexId target_index(const EdgeId &e) const {
-    return e % neighborhood_;
+  inline EdgeId out_degree(const VertexId &) const { return N; }
+  inline VertexId source(const EdgeId &e) const { return e / N; }
+  inline VertexId target_index(const EdgeId &e) const { return e % N; }
+
+  /// Index into Grid's 8-slot neighbour row for direction @p i of this
+  /// neighbourhood: neighbor8(c, 2 * i) == neighbor4(c, i).
+  static inline int dirIndex(const VertexId i) {
+    return static_cast<int>(N == 8 ? i : 2 * i);
   }
+
+  /**
+   * Target of edge @p e, or its source when that neighbour does not exist.
+   *
+   * The source fallback is unchanged from the hash-based version; the edge is
+   * inert either way because cost() returns INF for it.
+   */
   inline VertexId target(const EdgeId &e) const {
-    // Construct target based on cell coordinates, neighborhood type, and
-    // neighbor index. No new cell should be created here.
-    auto s = source(e);
-    auto cell = grid_.cell(s);
-    auto i = target_index(e);
-    if (neighborhood_ == 8) {
-      cell = neighbor8(cell, i);
-    } else if (neighborhood_ == 4) {
-      cell = neighbor4(cell, i);
-    }
-
-    if (grid_.hasCell(cell)) {
-      return grid_.cellId(cell);
-    }
-    return s;
+    const VertexId s = source(e);
+    const CellId t = grid_.neighborId(s, dirIndex(target_index(e)));
+    return t == INVALID_CELL_ID ? s : t;
   }
 
+  /// True if every bounded layer of @p costs is within max_costs.
+  bool costsInBounds(const Costs &costs) const {
+    return grid::costsInBounds(costs, max_costs_);
+  }
+
+  /**
+   * Cost of edge @p e, or INF when the edge does not exist or either endpoint
+   * is out of bounds.
+   *
+   * A missing neighbour is INF rather than the old finite self-edge: Dijkstra
+   * can relax neither (a self-edge never improves the source's own distance),
+   * so path costs are bit-for-bit what they were, and the table lookup is all
+   * the work an absent edge costs now.
+   */
   inline Cost cost(const EdgeId &e) const {
-    // Ensure all costs are in bounds if provided.
-    const auto &c0 = grid_.costs(source(e));
-    if (!costsInBounds(c0, max_costs_absolute_)) {
+    const VertexId u = source(e);
+    const VertexId i = target_index(e);
+    const CellId v = grid_.neighborId(u, dirIndex(i));
+    if (v == INVALID_CELL_ID) {
       return INF;
     }
-    const auto &c1 = grid_.costs(target(e));
-    if (!costsInBounds(c1, max_costs_absolute_)) {
-      return INF;
-    }
-
-    auto cost = 1 + (c0.total() + c1.total()) / 2;
-
-    cost *= grid_.cellSize();
-    if (neighborhood_ == 8) {
-      cost *= distance8(target_index(e));
+    // Expression and multiplication order kept byte for byte; the exact-cost
+    // planning tests pin the accumulated float.
+    Cost cost = 1 + (total_[u] + total_[v]) / 2;
+    cost *= cell_size_;
+    if constexpr (N == 8) {
+      cost *= kDist8[i];
     }
     return cost;
   }
 
-  const Grid& grid() const { return grid_; }
+  /// The grid the graph is a view of.
+  const Grid &grid() const { return grid_; }
 
 protected:
   const Grid &grid_;
-  const uint8_t neighborhood_;
-  const Costs max_costs_absolute_;
+  const Costs max_costs_;
+  const float cell_size_;
+  /// Per-vertex Costs::total(), or INF when the cell is out of bounds.
+  std::vector<Cost> total_;
 };
 
-class EdgeCosts {
+/**
+ * Number of existing neighbours of @p v in the @p neighborhood-connected grid
+ * that satisfy @p accept(CellId).
+ *
+ * Table-based, like GraphN::target(): this replaces the out_edge walk over a
+ * boost::filtered_graph the frontier detection used to do (one hash lookup per
+ * examined edge).  A missing neighbour is INVALID_CELL_ID here, which is the
+ * same edge the old code recognised by target(e) == source(e) and skipped, so
+ * the degree is unchanged.
+ */
+template <typename Accept>
+inline int neighborDegree(const Grid &grid, CellId v, uint8_t neighborhood,
+                          Accept accept) {
+  const int count = (neighborhood == 4) ? 4 : 8;
+  const int step = (neighborhood == 4) ? 2 : 1;
+  int degree = 0;
+  for (int k = 0; k < count; ++k) {
+    const CellId t = grid.neighborId(v, k * step);
+    if (t != INVALID_CELL_ID && accept(t)) {
+      ++degree;
+    }
+  }
+  return degree;
+}
+
+/// The 8-neighbourhood graph; the default everywhere.
+typedef GraphN<8> Graph;
+/// The 4-neighbourhood graph.
+typedef GraphN<4> Graph4;
+
+template <uint8_t N> class EdgeCostsN {
 public:
-  EdgeCosts(const Graph &graph) : graph_(graph) {}
+  EdgeCostsN(const GraphN<N> &graph) : graph_(graph) {}
   inline Cost operator[](const EdgeId &e) const { return graph_.cost(e); }
 
 protected:
-  const Graph &graph_;
+  const GraphN<N> &graph_;
 };
+
+typedef EdgeCostsN<8> EdgeCosts;
+
+// Boost.Graph free functions found via ADL must live in naex::grid.
+template <uint8_t N>
+inline std::pair<VertexIter, VertexIter> vertices(const GraphN<N> &g) {
+  return g.vertices();
+}
+
+template <uint8_t N> inline VertexId source(EdgeId e, const GraphN<N> &g) {
+  return g.source(e);
+}
+
+template <uint8_t N> inline VertexId target(EdgeId e, const GraphN<N> &g) {
+  return g.target(e);
+}
+
+template <uint8_t N>
+inline std::pair<EdgeIter, EdgeIter> out_edges(VertexId u, const GraphN<N> &g) {
+  return g.out_edges(u);
+}
+
+// num_vertices() and out_degree() are what boost::filtered_graph and
+// breadth_first_search() need on top of the DijkstraGraph concept; they were
+// commented out before A* was added.
+template <uint8_t N> inline VertexId num_vertices(const GraphN<N> &g) {
+  return g.num_vertices();
+}
+
+template <uint8_t N> inline EdgeId out_degree(VertexId u, const GraphN<N> &g) {
+  return g.out_degree(u);
+}
+
+template <uint8_t N>
+inline Cost get(const EdgeCostsN<N> &map, const EdgeId &key) {
+  return map[key];
+}
 
 } // namespace grid
 } // namespace naex
 
-using namespace naex::grid;
-
 namespace boost {
-template <> struct graph_traits<Graph> {
-  typedef VertexId vertex_descriptor;
-  typedef VertexId vertices_size_type;
-  typedef EdgeId edge_descriptor;
-  typedef EdgeId edges_size_type;
+
+template <uint8_t N> struct graph_traits<naex::grid::GraphN<N>> {
+  typedef naex::grid::VertexId vertex_descriptor;
+  typedef naex::grid::VertexId vertices_size_type;
+  typedef naex::grid::EdgeId edge_descriptor;
+  typedef naex::grid::EdgeId edges_size_type;
 
   typedef directed_tag directed_category;
   typedef disallow_parallel_edge_tag edge_parallel_category;
 
-  // A* requires incidence_graph_tag
+  // incidence_graph_tag, not the bidirectional_traversal_tag this used to
+  // carry: A* (and boost::filtered_graph under it) requires IncidenceGraph,
+  // and Dijkstra is happy with it too.
   typedef incidence_graph_tag traversal_category;
-  // typedef bidirectional_traversal_tag traversal_category;
-  typedef VertexIter vertex_iterator;
-  typedef EdgeIter out_edge_iterator;
-  typedef EdgeIter in_edge_iterator;
-  typedef EdgeIter edge_iterator;
+  typedef naex::grid::VertexIter vertex_iterator;
+  typedef naex::grid::EdgeIter out_edge_iterator;
+  // filtered_graph typedefs these unconditionally, so they have to exist even
+  // though the graph is not bidirectional and has no edge list.
+  typedef naex::grid::EdgeIter in_edge_iterator;
+  typedef naex::grid::EdgeIter edge_iterator;
 
-  typedef EdgeId degree_size_type;
+  typedef naex::grid::EdgeId degree_size_type;
 };
 
-inline std::pair<VertexIter, VertexIter> vertices(const Graph &g) {
-  return g.vertices();
-}
-
-inline VertexId source(EdgeId e, const Graph &g) { return g.source(e); }
-
-inline VertexId target(EdgeId e, const Graph &g) { return g.target(e); }
-
-inline std::pair<EdgeIter, EdgeIter> out_edges(VertexId u, const Graph &g) {
-  return g.out_edges(u);
-}
-
-
-inline VertexId num_vertices(const Graph& g)
-{
-    return g.num_vertices();
-}
-
-inline EdgeId out_degree(VertexId u, const Graph& g)
-{
-    return g.out_degree(u);
-}
-
-
-template <> class property_traits<naex::grid::EdgeCosts> {
+template <uint8_t N> class property_traits<naex::grid::EdgeCostsN<N>> {
 public:
-  typedef EdgeId key_type;
-  typedef Cost value_type;
-  typedef Cost reference;
+  typedef naex::grid::EdgeId key_type;
+  typedef naex::grid::Cost value_type;
+  typedef naex::grid::Cost reference;
   typedef readable_property_map_tag category;
 };
 
-inline Cost get(const EdgeCosts &map, const EdgeId &key) { return map[key]; }
-
 } // namespace boost
-
-/*
-// Include dijkstra header once all used concepts are defined.
-// https://groups.google.com/g/boost-developers-archive/c/G2qArovLKzk
-// #include <boost/graph/dijkstra_shortest_paths.hpp>
-#include <boost/graph/dijkstra_shortest_paths_no_color_map.hpp>
-*/

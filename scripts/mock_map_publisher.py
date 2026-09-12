@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 import rclpy
+from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 from sensor_msgs.msg import PointCloud2, PointField
 from std_msgs.msg import Header
@@ -84,7 +85,7 @@ class MockMapPublisher(Node):
                         points.append([x, y, z, self.map_cost])
         
         if not points:
-            self.get_logger().warn('No map points generated')
+            self.get_logger().warning('No map points generated')
             return None
         
         # Define point cloud fields (always include cost field)
@@ -136,7 +137,7 @@ class MockMapPublisher(Node):
                 f'({traversable_points} traversable, {obstacle_points} obstacle)'
             )
         else:
-            self.get_logger().warn('Failed to create map cloud')
+            self.get_logger().warning('Failed to create map cloud')
 
 
 def main(args=None):
@@ -145,11 +146,12 @@ def main(args=None):
     
     try:
         rclpy.spin(node)
-    except KeyboardInterrupt:
+    except (KeyboardInterrupt, ExternalShutdownException):
         pass
     finally:
         node.destroy_node()
-        rclpy.shutdown()
+        if rclpy.ok():
+            rclpy.shutdown()
 
 
 if __name__ == '__main__':

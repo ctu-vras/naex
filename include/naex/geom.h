@@ -1,20 +1,19 @@
-#ifndef NAEX_GEOM_H
-#define NAEX_GEOM_H
+#pragma once
 
 #include "naex/types.h"
 #include <Eigen/Dense>
 #include <cmath>
 #include <cstddef>
 #include <mutex>
-#include <tf2/LinearMath/Matrix3x3.h>
+#include <tf2/LinearMath/Matrix3x3.hpp>
 #include <tf2_eigen/tf2_eigen.hpp>
 #include <unordered_set>
 
 namespace naex {
 
-template <typename T> T radians(const T &x) { return x / T(180) * T(M_PI); }
+template <typename T> inline T radians(const T &x) { return x / T(180) * T(M_PI); }
 
-template <typename T> T degrees(const T &x) { return x / T(M_PI) * T(180); }
+template <typename T> inline T degrees(const T &x) { return x / T(M_PI) * T(180); }
 
 template <typename T> inline T azimuth(const T x, const T y) {
   return std::atan2(y, x);
@@ -68,7 +67,7 @@ Value inline inclination(const Vec3 &x) {
 // template<typename T>
 // Vec4 plane_from_points(T& p0, T& p1, T& p2)
 template <typename Derived>
-Vec4 plane_from_points(const Eigen::MatrixBase<Derived> &p0,
+inline Vec4 plane_from_points(const Eigen::MatrixBase<Derived> &p0,
                        const Eigen::MatrixBase<Derived> &p1,
                        const Eigen::MatrixBase<Derived> &p2) {
   Vec3 n = (p1 - p0).cross(p2 - p0).normalized();
@@ -77,11 +76,9 @@ Vec4 plane_from_points(const Eigen::MatrixBase<Derived> &p0,
   return Vec4(n(0), n(1), n(2), d);
 }
 
-Vec4 e2p(Vec3 &v) {
+inline Vec4 e2p(Vec3 &v) {
   //    return Vec4(v, 1.);
   return Vec4(v(0), v(1), v(2), 1.);
 }
 
 } // namespace naex
-
-#endif // NAEX_GEOM_H

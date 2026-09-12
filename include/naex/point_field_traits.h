@@ -12,56 +12,56 @@ public:
 
 // float32
 template <>
-sensor_msgs::msg::PointField::_datatype_type
+inline sensor_msgs::msg::PointField::_datatype_type
 PointFieldTraits<float>::datatype() {
   return sensor_msgs::msg::PointField::FLOAT32;
 }
 
 // float64
 template <>
-sensor_msgs::msg::PointField::_datatype_type
+inline sensor_msgs::msg::PointField::_datatype_type
 PointFieldTraits<double>::datatype() {
   return sensor_msgs::msg::PointField::FLOAT64;
 }
 
 // int8
 template <>
-sensor_msgs::msg::PointField::_datatype_type
+inline sensor_msgs::msg::PointField::_datatype_type
 PointFieldTraits<int8_t>::datatype() {
   return sensor_msgs::msg::PointField::INT8;
 }
 
 // int16
 template <>
-sensor_msgs::msg::PointField::_datatype_type
+inline sensor_msgs::msg::PointField::_datatype_type
 PointFieldTraits<int16_t>::datatype() {
   return sensor_msgs::msg::PointField::INT16;
 }
 
 // int32
 template <>
-sensor_msgs::msg::PointField::_datatype_type
+inline sensor_msgs::msg::PointField::_datatype_type
 PointFieldTraits<int32_t>::datatype() {
   return sensor_msgs::msg::PointField::INT32;
 }
 
 // uint8
 template <>
-sensor_msgs::msg::PointField::_datatype_type
+inline sensor_msgs::msg::PointField::_datatype_type
 PointFieldTraits<uint8_t>::datatype() {
   return sensor_msgs::msg::PointField::UINT8;
 }
 
 // uint16
 template <>
-sensor_msgs::msg::PointField::_datatype_type
+inline sensor_msgs::msg::PointField::_datatype_type
 PointFieldTraits<uint16_t>::datatype() {
   return sensor_msgs::msg::PointField::UINT16;
 }
 
 // uint32
 template <>
-sensor_msgs::msg::PointField::_datatype_type
+inline sensor_msgs::msg::PointField::_datatype_type
 PointFieldTraits<uint32_t>::datatype() {
   return sensor_msgs::msg::PointField::UINT32;
 }

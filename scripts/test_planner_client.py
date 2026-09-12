@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 import rclpy
+from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 from nav_msgs.srv import GetPlan
 from nav_msgs.msg import Path
@@ -118,7 +119,7 @@ class TestPlannerClient(Node):
         if obstacle_avoidance:
             self.get_logger().info('Path successfully avoids obstacle')
         else:
-            self.get_logger().warn('Path may pass through obstacle!')
+            self.get_logger().warning('Path may pass through obstacle!')
             
         # Publish path for visualization
         self.path_pub.publish(response.plan)
@@ -177,7 +178,7 @@ class TestPlannerClient(Node):
             # Check if point is within square obstacle bounds
             if (obstacle_x_min <= x <= obstacle_x_max and 
                 obstacle_y_min <= y <= obstacle_y_max):
-                self.get_logger().warn(f'Path point ({x:.2f}, {y:.2f}) is inside square obstacle bounds')
+                self.get_logger().warning(f'Path point ({x:.2f}, {y:.2f}) is inside square obstacle bounds')
                 return False
                 
         return True
@@ -189,11 +190,12 @@ def main(args=None):
     
     try:
         rclpy.spin(node)
-    except KeyboardInterrupt:
+    except (KeyboardInterrupt, ExternalShutdownException):
         pass
     finally:
         node.destroy_node()
-        rclpy.shutdown()
+        if rclpy.ok():
+            rclpy.shutdown()
 
 
 if __name__ == '__main__':

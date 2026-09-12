@@ -6,7 +6,7 @@ from ament_index_python.packages import get_package_share_directory
 
 
 def generate_launch_description():
-    package_dir = get_package_share_directory("grid_planner")
+    package_dir = get_package_share_directory("naex")
     rviz_config = os.path.join(package_dir, "config", "grid_planner_test.rviz")
 
     return LaunchDescription(
@@ -42,16 +42,13 @@ def generate_launch_description():
                             float("nan"),
                         ],
                         "neighborhood": 8,
-                        "min_path_cost": 1.0,
                         "planning_freq": 1.0,
-                        "plan_from_goal_dist": 1.0,
                         "num_input_clouds": 2,
                         "input_queue_size": 5,
                         "start_on_request": False,
                         "stop_on_goal": True,
                         "goal_reached_dist": 0.5,
                         "mode": 2,
-                        "plan_to_goal": True,
                         # Ad-hoc cost parameters
                         "adhoc_costs": ["sidelobes"],
                         "adhoc_layer": 3,

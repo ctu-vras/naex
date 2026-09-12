@@ -1,330 +1,403 @@
 #pragma once
+
 #include "naex/grid/graph.h"
 #include "naex/grid/grid.h"
-#include <boost/graph/dijkstra_shortest_paths_no_color_map.hpp>
+#include "naex/types.h"
 #include <boost/graph/astar_search.hpp>
+#include <boost/graph/breadth_first_search.hpp>
+#include <boost/graph/dijkstra_shortest_paths_no_color_map.hpp>
 #include <boost/graph/filtered_graph.hpp>
+#include <rclcpp/rclcpp.hpp>
+#include <cmath>
+#include <cstddef>
+#include <cstdint>
+#include <functional>
+#include <limits>
+#include <vector>
 
 namespace naex {
 namespace grid {
 
-// Abstract base class for shortest path algorithms
-class ShortestPaths {
-public:
-  virtual ~ShortestPaths() = default;
+/// Euclidean distance between the centres of cells @p u and @p v.
+inline Value cellDistance(const Grid &grid, VertexId u, VertexId v) {
+  const Point2f a = grid.point(u);
+  const Point2f b = grid.point(v);
+  const float dx = a.x - b.x;
+  const float dy = a.y - b.y;
+  return std::sqrt(dx * dx + dy * dy);
+}
 
-  virtual const std::vector<VertexId> &predecessors() const = 0;
-  virtual const std::vector<Cost> &pathCosts() const = 0;
-  virtual const std::vector<Cost> &fValues() const = 0;
+/**
+ * True if the centre of cell @p v is within @p max_range of the centre of
+ * cell @p start.
+ *
+ * This is the A* range crop; it is exposed because the frontier detection in
+ * the planner has to agree with it cell for cell.
+ */
+inline bool withinRange(const Grid &grid, VertexId v, VertexId start,
+                        float max_range) {
+  return !(cellDistance(grid, v, start) > max_range);
+}
 
-  virtual const VertexId &predecessor(VertexId v) const = 0;
-  virtual const Cost &pathCost(VertexId v) const = 0;
-  virtual const Cost &fValue(VertexId v) const = 0;
-  virtual const Graph &full_graph() const = 0;
-
-};
-
-class DijkstraShortestPaths : public ShortestPaths {
-public:
-  DijkstraShortestPaths(const Grid &grid,
-                        VertexId start,
-                        uint8_t neighborhood = 8,
-                        const Costs &max_costs_absolute = Costs(0.0))
-    : graph_(Graph(grid, neighborhood, max_costs_absolute)),
-    edge_costs_(EdgeCosts(graph_)),
-    predecessor_(graph_.num_vertices(), std::numeric_limits<VertexId>::max()),
-    path_costs_(graph_.num_vertices(), std::numeric_limits<Cost>::infinity()),
-    f_values_(graph_.num_vertices(), Cost(0.))  // Not used by Dijkstra, zeroed for visualization
-  {
-    boost::typed_identity_property_map<VertexId> index_map;
-
-    boost::dijkstra_shortest_paths_no_color_map(
-        graph_, start, predecessor_.data(), path_costs_.data(), edge_costs_,
-        index_map, std::less<Cost>(), boost::closed_plus<Cost>(),
-        std::numeric_limits<Cost>::infinity(), Cost(0.),
-        boost::dijkstra_visitor<boost::null_visitor>());
-  }
-
-  const std::vector<VertexId> &predecessors() const override { return predecessor_; }
-  const std::vector<Cost> &pathCosts() const override { return path_costs_; }
-  const std::vector<Cost> &fValues() const override { return f_values_; }
-
-  const VertexId &predecessor(VertexId v) const override { return predecessor_[v]; }
-  const Cost &pathCost(VertexId v) const override { return path_costs_[v]; }
-  const Cost &fValue(VertexId v) const override { return f_values_[v]; }
-
-  const Graph &full_graph() const override { return graph_; }
-
-protected:
-  Graph graph_;
-  EdgeCosts edge_costs_;
-  std::vector<VertexId> predecessor_;
-  std::vector<Cost> path_costs_;
-  std::vector<Cost> f_values_;
-};
-
-// Astar
-
-// Used to filter vertices too far away from the starting position.
-// This is meant to speed things up in case the map grows too big.
-struct MaxRangeVertexFilter
-{
-  const Grid* grid_;
-  float max_range_;
-  VertexId start_;
-  int *num_vertices_out_of_range_;
+/**
+ * Vertex predicate of the A* search: drops cells farther than @p max_range_
+ * from the start cell so the search does not walk a map that has grown far
+ * beyond the current neighbourhood.
+ */
+struct MaxRangeVertexFilter {
+  const Grid *grid_{nullptr};
+  float max_range_{std::numeric_limits<float>::infinity()};
+  VertexId start_{0};
+  size_t *num_vertices_out_of_range_{nullptr};
 
   MaxRangeVertexFilter() = default;
 
-  MaxRangeVertexFilter(const Grid& grid,
-               float max_range,
-               VertexId start,
-               int *num_vertices_out_of_range
-              )
-    : grid_(&grid)
-    , max_range_(max_range)
-    , start_(start)
-    , num_vertices_out_of_range_(num_vertices_out_of_range)
-  {}
+  MaxRangeVertexFilter(const Grid &grid, float max_range, VertexId start,
+                       size_t *num_vertices_out_of_range)
+      : grid_(&grid), max_range_(max_range), start_(start),
+        num_vertices_out_of_range_(num_vertices_out_of_range) {}
 
-  bool operator()(VertexId v) const
-  {
-    auto pu = grid_->point(v);
-    auto ps = grid_->point(start_);
-    double dx = pu.x - ps.x;
-    double dy = pu.y - ps.y;
-    double dist = std::sqrt(dx*dx + dy*dy);
-
-    if (dist > max_range_) {
-      (*num_vertices_out_of_range_)++;
-      return false;
+  bool operator()(VertexId v) const {
+    if (withinRange(*grid_, v, start_, max_range_)) {
+      return true;
     }
-    return true;
+    if (num_vertices_out_of_range_) {
+      ++(*num_vertices_out_of_range_);
+    }
+    return false;
   }
 };
 
-// Heuristic function for A*
-// Euclidean distance to goal.
-class AStarHeuristic : public boost::astar_heuristic<Graph, Cost> {
+/**
+ * Heuristic of the A* search: straight-line distance from a cell centre to the
+ * goal point.
+ *
+ * Admissible for the edge costs of GraphN: an edge costs
+ * (1 + mean cell cost) * its Euclidean length, and cell costs are
+ * non-negative, so no edge is ever cheaper than its length.
+ */
+template <uint8_t N>
+class AStarHeuristic : public boost::astar_heuristic<GraphN<N>, Cost> {
 public:
-  AStarHeuristic(const Grid& grid, Vec3 goal_point) 
-    : grid_(grid), goal_point_(goal_point) {}
-  
-  Cost operator()(VertexId u) {
-    auto point_u = grid_.point(u);
-    double dx = point_u.x - goal_point_.x();
-    double dy = point_u.y - goal_point_.y();
-    return std::sqrt(dx*dx + dy*dy);
+  AStarHeuristic(const Grid &grid, const Vec3 &goal_point)
+      : grid_(grid), goal_point_(goal_point) {}
+
+  Cost operator()(VertexId u) const {
+    const Point2f p = grid_.point(u);
+    const double dx = p.x - goal_point_.x();
+    const double dy = p.y - goal_point_.y();
+    return static_cast<Cost>(std::sqrt(dx * dx + dy * dy));
   }
-  
+
 private:
-  const Grid& grid_;
+  const Grid &grid_;
   Vec3 goal_point_;
 };
 
-// Custom visitor to catch goal (if it is reachable) and to stop the
-// search if we hit an obstacle vertex (which means we have explored all the traversable vertices).
+/**
+ * A* visitor that stops the search on the goal cell, and also as soon as the
+ * first untraversable cell is popped.
+ *
+ * The second condition is what makes "visited" mean "reachable": because the
+ * queue is ordered by f and every traversable cell has a finite f, popping an
+ * out-of-bounds cell means every traversable cell in range has already been
+ * expanded.
+ */
 struct AstarGoalVisitor : public boost::default_astar_visitor {
-  AstarGoalVisitor(VertexId goal, bool is_goal_explored, const Grid &grid, const Costs &max_costs_absolute)
-    : goal_(goal), is_goal_explored_(is_goal_explored), grid_(grid), max_costs_absolute_(max_costs_absolute) {}
-  
-  // The function called when a vertex is popped.
-  void examine_vertex(VertexId u, const boost::filtered_graph<Graph, boost::keep_all, MaxRangeVertexFilter>&) {
-    if (!naex::grid::costsInBounds(grid_.costs(u), max_costs_absolute_)) {
-      // Assume that the first time you visit an infinite cost vertex (obstacle),
-      // you have already visited all finite cost vertices (traversable).
+  AstarGoalVisitor(VertexId goal, bool stop_on_goal, const Grid &grid,
+                   const Costs &max_costs)
+      : goal_(goal), stop_on_goal_(stop_on_goal), grid_(&grid),
+        max_costs_(max_costs) {}
+
+  /// Exceptions used to leave boost::astar_search early.
+  struct GoalFound {};
+  struct GoalNotFound {};
+
+  template <typename G> void examine_vertex(VertexId u, const G &) const {
+    if (!naex::grid::costsInBounds(grid_->costs(u), max_costs_)) {
       throw GoalNotFound();
     }
-    else if (is_goal_explored_ && u == goal_) {
+    if (stop_on_goal_ && u == goal_) {
       throw GoalFound();
     }
   }
-  
-  // Exceptions to return.
-  struct GoalFound {};
-  struct GoalNotFound {};
-  
-  private:
-    VertexId goal_;
-    bool is_goal_explored_;
-    const Grid &grid_;
-    const Costs &max_costs_absolute_;
+
+private:
+  VertexId goal_;
+  bool stop_on_goal_;
+  const Grid *grid_;
+  Costs max_costs_;
 };
 
-// Main class for Astar search.
-class AstarShortestPaths : public ShortestPaths {
+/**
+ * Shortest paths over a Grid, by Dijkstra (whole grid) or by A* (to a goal
+ * point, cropped to a radius around the start).
+ *
+ * One class for both searches, so that the planner and the mule planner can
+ * hold it as a value and hand it to the same map-cloud publisher.  It is
+ * reusable (P2): compute() and computeAstar() keep the predecessor, path-cost,
+ * f-value and colour buffers across calls, so a repeated search on a grid of
+ * the same size allocates nothing.  The runtime @p neighborhood selects
+ * between the two compile-time GraphN instantiations; everything else is
+ * shared.
+ *
+ * The graph (and with it the per-vertex cost cache of GraphN) is built inside
+ * every call, so a cost threshold changed by the parameter callback, an ad-hoc
+ * cost layer rewritten just before the search, and a grid compacted by the P6
+ * eviction are all picked up by the next search without any explicit
+ * invalidation.
+ */
+class ShortestPaths {
 public:
-  AstarShortestPaths(const rclcpp::Node::SharedPtr nh,
-                     const Grid &grid,
-                     VertexId start,
-                     Vec3 goal_point,
-                     bool is_goal_explored,
-                     float astar_max_range,
-                     uint8_t neighborhood = 8,
-                     const Costs &max_costs_absolute = Costs(0.0))
-    : graph_(Graph(grid, neighborhood, max_costs_absolute)),
-      edge_costs_(EdgeCosts(graph_)),
-      predecessor_(graph_.num_vertices(), std::numeric_limits<VertexId>::max()),
-      path_costs_(graph_.num_vertices(), std::numeric_limits<Cost>::infinity()),
-      f_values_(graph_.num_vertices(), std::numeric_limits<Cost>::infinity()),
-      visited_(graph_.num_vertices(), 0) {
+  static constexpr Cost INF = std::numeric_limits<Cost>::infinity();
+  /**
+   * Path costs and f values above this mean "not reached".
+   *
+   * boost::astar_search's default distance_inf is
+   * std::numeric_limits<Cost>::max(), not infinity, so after an A* run an
+   * unreached in-range cell carries a *finite* FLT_MAX (an out-of-range cell,
+   * which boost never even initializes, keeps the INF this class filled in).
+   * Test against this constant, never with std::isfinite, after an A* run.
+   * After a Dijkstra run unreached cells are plain infinity and either test
+   * works.
+   */
+  static constexpr Cost kUnreachableCost = 1e9f;
 
-    // Filter graph vertices that are too far from the start to speed up search.
-    int num_vertices_out_of_range{0};
-    MaxRangeVertexFilter vf(graph_.grid(), astar_max_range, start, &num_vertices_out_of_range);
-    filtered_graph_ = std::make_shared<boost::filtered_graph<Graph, boost::keep_all, MaxRangeVertexFilter>>(
-        boost::make_filtered_graph(graph_, boost::keep_all(), vf));
-
-    boost::typed_identity_property_map<VertexId> index_map;
-
-    // Prepare visitor. We only want to stop on goal if the goal is in the explored part of the grid,
-    // so figure that out here.
-    VertexId goal = INVALID_VERTEX;
-    if (is_goal_explored) {
-      // Only get the goal vertex if we want to stop searching on hitting goal.
-      goal = graph_.grid().cellId(graph_.grid().pointToCell({goal_point.x(), goal_point.y()}));
-    }
-    AstarGoalVisitor visitor(goal, is_goal_explored, graph_.grid(), max_costs_absolute);
-
-    // Prepare color map for A* to keep note of visited vertices.
-    // This will be useful because visited == reachable thanks to the visitor.
-    colors_.assign(boost::num_vertices(graph_), boost::white_color);
-    auto color_map = boost::make_iterator_property_map(
-        colors_.begin(),
-        boost::identity_property_map()
-    );
-
-    // Prepare the (euclidean dist) heuristic.
-    AStarHeuristic heuristic(graph_.grid(), goal_point);
-
-    try {
-      boost::astar_search(
-          *filtered_graph_, start, heuristic,
-          boost::predecessor_map(predecessor_.data())
-              .distance_map(path_costs_.data())
-              .weight_map(edge_costs_)
-              .rank_map(f_values_.data())
-              .vertex_index_map(index_map)
-              .visitor(visitor)
-              .color_map(color_map));
-      RCLCPP_INFO(nh->get_logger(), "AStar did not find goal.");
-    } catch (AstarGoalVisitor::GoalFound &) {
-      RCLCPP_INFO(nh->get_logger(), "AStar found goal.");
-      found_goal_ = true;
-    } catch (AstarGoalVisitor::GoalNotFound &) {
-      RCLCPP_INFO(nh->get_logger(), "AStar did not find goal.");
-      found_goal_ = false;
-    }
-
-    for (std::size_t i = 0; i < colors_.size(); ++i) {
-      visited_[i] = (colors_[i] != boost::white_color) ? 1 : 0;
-    }
-    RCLCPP_INFO(nh->get_logger(), "Filtered out %d out of range (> %f m) points.",
-                num_vertices_out_of_range, astar_max_range);
+  ShortestPaths() = default;
+  ShortestPaths(const Grid &grid, VertexId start, uint8_t neighborhood = 8,
+                const Costs &max_costs = Costs(0.0)) {
+    compute(grid, start, neighborhood, max_costs);
   }
 
-  const std::vector<VertexId> &predecessors() const override { return predecessor_; }
-  const std::vector<Cost> &pathCosts() const override { return path_costs_; }
-  const std::vector<Cost> &fValues() const override { return f_values_; }
+  /// Dijkstra from @p start over the whole grid; anything but
+  /// neighborhood == 4 is the 8-neighbourhood, as before.
+  void compute(const Grid &grid, VertexId start, uint8_t neighborhood = 8,
+               const Costs &max_costs = Costs(0.0)) {
+    astar_ = false;
+    found_goal_ = false;
+    if (neighborhood == 4) {
+      run<4>(grid, start, max_costs);
+    } else {
+      run<8>(grid, start, max_costs);
+    }
+  }
+
+  /**
+   * A* from @p start toward @p goal_point.
+   *
+   * @param is_goal_explored true when @p goal_point falls on an existing cell;
+   *        only then can the search stop on the goal.
+   * @param max_range cells farther than this from the start cell are not
+   *        expanded at all.
+   * @return true if the goal cell was reached (also available as foundGoal()).
+   */
+  bool computeAstar(const rclcpp::Logger &log, const Grid &grid,
+                    VertexId start, const Vec3 &goal_point,
+                    bool is_goal_explored, float max_range,
+                    uint8_t neighborhood = 8,
+                    const Costs &max_costs = Costs(0.0)) {
+    astar_ = true;
+    found_goal_ = false;
+    if (neighborhood == 4) {
+      runAstar<4>(log, grid, start, goal_point, is_goal_explored, max_range,
+                  max_costs);
+    } else {
+      runAstar<8>(log, grid, start, goal_point, is_goal_explored, max_range,
+                  max_costs);
+    }
+    return found_goal_;
+  }
+
+  const std::vector<VertexId> &predecessors() const { return predecessor_; }
+  const std::vector<Cost> &pathCosts() const { return path_costs_; }
+  /// A* f = g + h per cell; all zeros after a Dijkstra run.
+  const std::vector<Cost> &fValues() const { return f_values_; }
+  /// 1 for every cell the search expanded, i.e. every reachable cell.
   const std::vector<std::uint8_t> &visited() const { return visited_; }
 
-  const VertexId &predecessor(VertexId v) const override { return predecessor_[v]; }
-  const Cost &pathCost(VertexId v) const override { return path_costs_[v]; }
-  const Cost &fValue(VertexId v) const override { return f_values_[v]; }
+  const VertexId &predecessor(VertexId v) const { return predecessor_[v]; }
+  const Cost &pathCost(VertexId v) const { return path_costs_[v]; }
+  const Cost &fValue(VertexId v) const { return f_values_[v]; }
 
-  const bool found_goal() const { return found_goal_; }
-  const Graph &full_graph() const override { return graph_; }
-  const boost::filtered_graph<Graph, boost::keep_all, MaxRangeVertexFilter> &filtered_graph() const {
-    return *filtered_graph_;
-  }
+  /// True if the last search was an A* search.
+  bool isAstar() const { return astar_; }
+  /// True if the last A* search reached its goal cell.
+  bool foundGoal() const { return found_goal_; }
 
-  // This is used for the case where we do find a path to goal, but it is very long which prompts
-  // us to also consider traveling to some frontier instead in search of a more efficient path.
-  // This solves the "Traveling in a circle with the end being next to the start in an explored
-  // part of the grid" edge case, which causes the robot to travel to the final point by going
-  // back through the explored part of the grid, instead of pushing through the unexplored.
-  const Value cheapest_path_euclidean_dist(const rclcpp::Node::SharedPtr nh, VertexId v_start, VertexId v_goal) const {
-    // iterate all predecessors
-    VertexId v_pred_previous = INVALID_VERTEX;
-    Value path_to_goal_dist{0.};
-    auto predecessors = this->predecessors();
-
-    assert(predecessors[v_start] == v_start);
-    Vertex v = v_goal;
-    while (v != v_start) {
-      if (v_pred_previous != INVALID_VERTEX) {
-        float x1 = graph_.grid().point(v).x;
-        float x2 = graph_.grid().point(v_pred_previous).x;
-        float y1 = graph_.grid().point(v).y;
-        float y2 = graph_.grid().point(v_pred_previous).y;
-        path_to_goal_dist += std::sqrt((x1-x2)*(x1-x2) + (y1-y2)*(y1-y2));
-      }
-      v_pred_previous = v;
-      v = predecessors[v];
+  /**
+   * Length, in metres, of the predecessor path from @p v_goal back to
+   * @p v_start.
+   *
+   * Used to compare the cost-optimal route against the straight line to the
+   * goal: a route that is much longer than the crow-flies distance is the
+   * "drive all the way around an explored loop" case the frontier selection
+   * exists to avoid.
+   */
+  Value cheapestPathEuclideanDist(const Grid &grid, VertexId v_start,
+                                  VertexId v_goal) const {
+    if (v_goal == INVALID_VERTEX_ID || v_start == INVALID_VERTEX_ID) {
+      return std::numeric_limits<Value>::infinity();
     }
-    return path_to_goal_dist;
+    assert(predecessor_[v_start] == v_start);
+    VertexId previous = INVALID_VERTEX_ID;
+    Value dist = 0.;
+    VertexId v = v_goal;
+    while (v != v_start) {
+      if (previous != INVALID_VERTEX_ID) {
+        dist += cellDistance(grid, v, previous);
+      }
+      previous = v;
+      const VertexId pred = predecessor_[v];
+      if (pred == v || pred == INVALID_VERTEX_ID) {
+        // Not connected to the start; the caller treats infinity as "too far".
+        return std::numeric_limits<Value>::infinity();
+      }
+      v = pred;
+    }
+    return dist;
   }
 
 protected:
-  Graph graph_;
-  EdgeCosts edge_costs_;
+  template <uint8_t N>
+  void run(const Grid &grid, VertexId start, const Costs &max_costs) {
+    const GraphN<N> graph(grid, max_costs);
+    const EdgeCostsN<N> edge_costs(graph);
+    const size_t n = graph.num_vertices();
+    // dijkstra_shortest_paths_no_color_map() sets every distance to infinity
+    // and every predecessor to the vertex itself before it starts, so the
+    // buffers only have to be large enough.
+    predecessor_.resize(n);
+    path_costs_.resize(n);
+    boost::typed_identity_property_map<VertexId> index_map;
+    boost::dijkstra_shortest_paths_no_color_map(
+        graph, start, predecessor_.data(), path_costs_.data(), edge_costs,
+        index_map, std::less<Cost>(), boost::closed_plus<Cost>(),
+        std::numeric_limits<Cost>::infinity(), Cost(0.),
+        boost::dijkstra_visitor<boost::null_visitor>());
+    // Dijkstra has no heuristic; f is zeroed so that the map cloud has the
+    // same fields whichever search ran.  Reachable == finite path cost.
+    f_values_.assign(n, Cost(0.));
+    visited_.resize(n);
+    for (size_t v = 0; v < n; ++v) {
+      visited_[v] = std::isfinite(path_costs_[v]) ? 1 : 0;
+    }
+  }
+
+  template <uint8_t N>
+  void runAstar(const rclcpp::Logger &log, const Grid &grid, VertexId start,
+                const Vec3 &goal_point, bool is_goal_explored, float max_range,
+                const Costs &max_costs) {
+    typedef boost::filtered_graph<GraphN<N>, boost::keep_all,
+                                  MaxRangeVertexFilter>
+        FilteredGraph;
+
+    const GraphN<N> graph(grid, max_costs);
+    const EdgeCostsN<N> edge_costs(graph);
+    const size_t n = graph.num_vertices();
+
+    // boost::astar_search initializes only the vertices the filter keeps, so
+    // unlike the Dijkstra above these buffers must be filled here.
+    predecessor_.assign(n, INVALID_VERTEX_ID);
+    path_costs_.assign(n, INF);
+    f_values_.assign(n, INF);
+    colors_.assign(n, boost::white_color);
+    visited_.assign(n, 0);
+
+    size_t num_vertices_out_of_range = 0;
+    const MaxRangeVertexFilter filter(grid, max_range, start,
+                                      &num_vertices_out_of_range);
+    const FilteredGraph filtered(graph, boost::keep_all(), filter);
+
+    // Stopping on the goal only makes sense when the goal is a cell we have.
+    VertexId goal = INVALID_VERTEX_ID;
+    if (is_goal_explored) {
+      goal = grid.findCell(
+          grid.pointToCell({goal_point.x(), goal_point.y()}));
+    }
+    const AstarGoalVisitor visitor(goal, is_goal_explored, grid, max_costs);
+    const AStarHeuristic<N> heuristic(grid, goal_point);
+
+    boost::typed_identity_property_map<VertexId> index_map;
+    auto color_map = boost::make_iterator_property_map(
+        colors_.begin(), boost::identity_property_map());
+
+    try {
+      boost::astar_search(filtered, start, heuristic,
+                          boost::predecessor_map(predecessor_.data())
+                              .distance_map(path_costs_.data())
+                              .weight_map(edge_costs)
+                              .rank_map(f_values_.data())
+                              .vertex_index_map(index_map)
+                              .visitor(visitor)
+                              .color_map(color_map));
+      RCLCPP_INFO(log, "AStar exhausted the graph without reaching the goal.");
+    } catch (const AstarGoalVisitor::GoalFound &) {
+      RCLCPP_INFO(log, "AStar found goal.");
+      found_goal_ = true;
+    } catch (const AstarGoalVisitor::GoalNotFound &) {
+      RCLCPP_INFO(log, "AStar did not find goal.");
+      found_goal_ = false;
+    }
+
+    for (size_t v = 0; v < n; ++v) {
+      visited_[v] = (colors_[v] != boost::white_color) ? 1 : 0;
+    }
+    RCLCPP_INFO(log, "Filtered out %lu out of range (> %f m) points.",
+                static_cast<unsigned long>(num_vertices_out_of_range),
+                static_cast<double>(max_range));
+  }
+
   std::vector<VertexId> predecessor_;
   std::vector<Cost> path_costs_;
   std::vector<Cost> f_values_;
-  std::shared_ptr<boost::filtered_graph<Graph, boost::keep_all, MaxRangeVertexFilter>> filtered_graph_;
-  std::vector<boost::default_color_type> colors_;
   std::vector<std::uint8_t> visited_;
+  std::vector<boost::default_color_type> colors_;
+  bool astar_{false};
   bool found_goal_{false};
 };
 
-// Unlike the Dijkstra and Astar above, which are used for planning, this is used
-// to find connected frontier components in search of the optimal frontier to travel to,
-// if we cannot plan straight to the goal.
+/**
+ * Breadth-first search over a Grid, used to group frontier cells into
+ * connected components.
+ *
+ * Unlike ShortestPaths this ignores costs entirely; only the 8-neighbourhood
+ * connectivity of the cells matters.  The graph is built once and run() may be
+ * called for as many seeds as needed, which is what the component loop of the
+ * frontier selection does (it used to rebuild the graph per seed).
+ */
 class BFS {
-  public:
-    BFS(const rclcpp::Node::SharedPtr nh,
-        const Grid &grid,
-        VertexId nearest_frontier,
-        const Costs &max_costs_absolute = Costs(0.0))
-      : nh_(nh),
-        graph_(grid, 8, max_costs_absolute),
-        visited_(boost::num_vertices(graph_), 0) {
+public:
+  explicit BFS(const Grid &grid, const Costs &max_costs = Costs(0.0))
+      : graph_(grid, max_costs) {}
 
-      colors_.assign(boost::num_vertices(graph_), boost::white_color);
-      auto color_map = boost::make_iterator_property_map(
-        colors_.begin(),
-        boost::identity_property_map()
-      );
-
-      boost::breadth_first_search(
-        graph_,
-        nearest_frontier,
+  void run(VertexId seed) {
+    const size_t n = graph_.num_vertices();
+    colors_.assign(n, boost::white_color);
+    visited_.assign(n, 0);
+    auto color_map = boost::make_iterator_property_map(
+        colors_.begin(), boost::identity_property_map());
+    boost::breadth_first_search(
+        graph_, seed,
         boost::visitor(boost::default_bfs_visitor())
-          .vertex_index_map(boost::identity_property_map())
-          .color_map(color_map)
-      );
-
-      // Populate visited_ from color map
-      int num_visited = 0;
-      for (std::size_t i = 0; i < colors_.size(); ++i) {
-        if (colors_[i] != boost::white_color) {
-          visited_[i] = 1;
-          ++num_visited;
-        } else {
-          visited_[i] = 0;
-        }
+            .vertex_index_map(boost::identity_property_map())
+            .color_map(color_map));
+    num_visited_ = 0;
+    for (size_t v = 0; v < n; ++v) {
+      if (colors_[v] != boost::white_color) {
+        visited_[v] = 1;
+        ++num_visited_;
       }
-
-      RCLCPP_INFO(nh_->get_logger(), "BFS visited %u/%lu vertices.", num_visited, visited_.size());
     }
+  }
 
-    const std::vector<std::uint8_t>& visited() const { return visited_; }
+  const std::vector<std::uint8_t> &visited() const { return visited_; }
+  size_t numVisited() const { return num_visited_; }
 
-  protected:
-    rclcpp::Node::SharedPtr nh_;
-    Graph graph_;
-    std::vector<std::uint8_t> visited_;
-    std::vector<boost::default_color_type> colors_;
+protected:
+  Graph graph_;
+  std::vector<std::uint8_t> visited_;
+  std::vector<boost::default_color_type> colors_;
+  size_t num_visited_{0};
 };
 
 } // namespace grid

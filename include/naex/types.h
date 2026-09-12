@@ -1,12 +1,7 @@
-
-#ifndef NAEX_TYPES_H
-#define NAEX_TYPES_H
-
+#pragma once
 #include <Eigen/Dense>
 #include <memory>
 #include <mutex>
-
-// #define K_NEIGHBORS 32
 
 namespace naex {
 typedef std::mutex Mutex;
@@ -142,7 +137,7 @@ public:
   Neighborhood() {}
 
   // TODO: Make K_NEIGHBORS a parameter.
-  static const Index K_NEIGHBORS = 48;
+  static constexpr Index K_NEIGHBORS = 48;
   Value position_[3] = {std::numeric_limits<Value>::quiet_NaN(),
                         std::numeric_limits<Value>::quiet_NaN(),
                         std::numeric_limits<Value>::quiet_NaN()};
@@ -158,5 +153,3 @@ public:
 };
 
 } // namespace naex
-
-#endif // NAEX_TYPES_H

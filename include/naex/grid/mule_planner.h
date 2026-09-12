@@ -11,6 +11,12 @@
 
 namespace naex {
 namespace grid {
+
+/// 2-D position of a ROS point, narrowed to the float the grid works in.
+inline Point2f toPoint2f(const geometry_msgs::msg::Point &p) {
+  return Point2f(static_cast<float>(p.x), static_cast<float>(p.y));
+}
+
 class MulePlanner {
   public:
     MulePlanner(rclcpp::Node::SharedPtr nh) : nh_(nh) {
@@ -23,7 +29,9 @@ class MulePlanner {
       astar_max_range_ = nh_->declare_parameter<float>("astar_max_range", astar_max_range_);
       obstacle_cost_threshold_ = nh_->declare_parameter<float>("obstacle_cost_threshold", obstacle_cost_threshold_);
       max_start_to_traversable_dist_ = nh_->declare_parameter<float>("max_start_to_traversable_dist", max_start_to_traversable_dist_);
-      max_costs_ = {obstacle_cost_threshold_}; // mirrors obstacle_cost_threshold_ but in different struct, just a formality
+      // Mirrors obstacle_cost_threshold_ in the struct the search takes.
+      // Costs' ctor is explicit (B1), hence no braced initializer here.
+      max_costs_ = Costs(obstacle_cost_threshold_);
 
       neighborhood_ = nh_->declare_parameter<int>("neighborhood", neighborhood_);
 
@@ -64,10 +72,13 @@ class MulePlanner {
       sensor_msgs::PointCloud2ConstIterator<float> x_it(*input, position_field_);
       sensor_msgs::PointCloud2ConstIterator<float> cost_iter(*input, cost_field_);
 
-      for (int i = 0; i < input->height * input->width; ++i, ++x_it, ++cost_iter) {
-        Vec3 p(x_it[0], x_it[1], x_it[2]);
-        if (std::isfinite(cost_iter[0])) {
-          grid_.updatePointCost({p.x(), p.y()}, 0, cost_iter[0]);
+      const size_t num_pts = static_cast<size_t>(input->height) * input->width;
+      for (size_t i = 0; i < num_pts; ++i, ++x_it, ++cost_iter) {
+        const Point2f p(x_it[0], x_it[1]);
+        // A non-finite or out-of-int16 position is undefined behaviour in the
+        // cast inside pointToCell() and creates phantom cells (P6).
+        if (std::isfinite(cost_iter[0]) && inCellRange(grid_, p)) {
+          grid_.updatePointCost(p, 0, cost_iter[0]);
         }
       }
 
@@ -111,7 +122,7 @@ class MulePlanner {
       start.pose.position.y = 0.;
       start.pose.position.z = 0.;
       start.pose.orientation.w = 1.;
-      VertexId v0 = INVALID_VERTEX;
+      VertexId v0 = INVALID_VERTEX_ID;
 
       if (grid_.hasCell(grid_.pointToCell({0., 0.}))) {
         // Grid contains start cell.
@@ -127,7 +138,7 @@ class MulePlanner {
             std::pair<float, VertexId> nearest_traversable = getNearestTraversableVertex();
             float best_dist = nearest_traversable.first;
             VertexId best_v = nearest_traversable.second;
-          if (best_v == INVALID_VERTEX) {
+          if (best_v == INVALID_VERTEX_ID) {
             publishEmptyPath(input->header.frame_id);
             return;
           }
@@ -151,7 +162,7 @@ class MulePlanner {
         std::pair<float, VertexId> nearest_traversable = getNearestTraversableVertex();
         float best_dist = nearest_traversable.first;
         VertexId best_v = nearest_traversable.second;
-        if (best_v == INVALID_VERTEX) {
+        if (best_v == INVALID_VERTEX_ID) {
             publishEmptyPath(input->header.frame_id);
             return;
         }
@@ -172,27 +183,31 @@ class MulePlanner {
       geometry_msgs::msg::Point last_path_point = current_path.poses.back().pose.position;
       Vec3 p1 = toVec3(last_path_point);
 
-      auto astar = std::make_shared<AstarShortestPaths>(nh_, grid_, v0, p1, false, astar_max_range_, neighborhood_, obstacle_cost_threshold_);
+      // Reused across clouds (P2): the search buffers keep their capacity.
+      ShortestPaths &astar = shortest_paths_;
+      astar.computeAstar(nh_->get_logger(), grid_, v0, p1, false,
+                         astar_max_range_,
+                         static_cast<uint8_t>(neighborhood_), max_costs_);
 
       createAndPublishMapCloud(astar);
 
       const auto [goal, goal_path_index] = chooseGoal(current_path, astar);
-      if (goal == INVALID_VERTEX) {
+      if (goal == INVALID_VERTEX_ID) {
         RCLCPP_WARN(nh_->get_logger(), "No reachable goal found on path. Publishing empty path.");
         publishEmptyPath(input->header.frame_id);
         return;
       }
 
       std::vector<VertexId> path_vertices;
-      assert(astar->predecessors()[v0] == v0);
-      Vertex v = goal;
+      assert(astar.predecessors()[v0] == v0);
+      VertexId v = goal;
       while (v != v0) {
         path_vertices.push_back(v);
-        if (v == astar->predecessors()[v]) {
+        if (v == astar.predecessors()[v]) {
           RCLCPP_ERROR(nh_->get_logger(), "Encountered cyclic predecessor while tracing path.");
           break;
         }
-        v = astar->predecessors()[v];
+        v = astar.predecessors()[v];
       }
       path_vertices.push_back(v);
       std::reverse(path_vertices.begin(), path_vertices.end());
@@ -260,30 +275,35 @@ class MulePlanner {
       append_field<float>("cost", 1, cloud);
       append_field<float>("path_cost", 1, cloud);
       append_field<float>("f_value", 1, cloud);
-      resize_cloud(cloud, 1, grid_.size());
+      const VertexId num_cells = static_cast<VertexId>(grid.size());
+      resize_cloud(cloud, 1, num_cells);
 
       sensor_msgs::PointCloud2Iterator<float> x_it(cloud, "x");
       sensor_msgs::PointCloud2Iterator<float> cost_it(cloud, "cost");
       sensor_msgs::PointCloud2Iterator<float> path_cost_it(cloud, "path_cost");
       sensor_msgs::PointCloud2Iterator<float> f_values_it(cloud, "f_value");
-      for (VertexId v = 0; v < grid_.size();
+      for (VertexId v = 0; v < num_cells;
           ++v, ++x_it, ++cost_it, ++path_cost_it, ++f_values_it) {
-        const auto p = grid_.point(v);
+        const auto p = grid.point(v);
         x_it[0] = p.x;
         x_it[1] = p.y;
         x_it[2] = 0.f;
-        cost_it[0] = grid_.costs(v).total();
+        cost_it[0] = grid.costs(v).total();
         path_cost_it[0] = path_costs[v];
         f_values_it[0] = f_values[v];
       }
     }
 
-    void createAndPublishMapCloud(const std::shared_ptr<ShortestPaths> sp) {
-      sensor_msgs::msg::PointCloud2 cloud;
-      cloud.header.frame_id = robot_frame_;
-      cloud.header.stamp = nh_->get_clock()->now();
-      fillMapCloud(cloud, grid_, sp->pathCosts(), sp->fValues());
-      map_pub_->publish(cloud);
+    void createAndPublishMapCloud(const ShortestPaths &sp) {
+      // rviz-only topic; skip building 24 B per cell when nobody listens (P4).
+      if (map_pub_->get_subscription_count() == 0) {
+        return;
+      }
+      auto cloud = std::make_unique<sensor_msgs::msg::PointCloud2>();
+      cloud->header.frame_id = robot_frame_;
+      cloud->header.stamp = nh_->get_clock()->now();
+      fillMapCloud(*cloud, grid_, sp.pathCosts(), sp.fValues());
+      map_pub_->publish(std::move(cloud));
     }
 
     // --------------------------------------------------------
@@ -292,19 +312,18 @@ class MulePlanner {
     // For now just return the furthest reachable point on the path.
 
     std::pair<VertexId, size_t>
-    chooseGoal(const nav_msgs::msg::Path &path,
-               const std::shared_ptr<AstarShortestPaths> &astar) {
-      VertexId goal{INVALID_VERTEX};
+    chooseGoal(const nav_msgs::msg::Path &path, const ShortestPaths &astar) {
+      VertexId goal{INVALID_VERTEX_ID};
       size_t goal_path_index = 0;
 
       for (size_t i = 0; i < path.poses.size(); ++i) {
         const auto &pose = path.poses[i];
-        auto c = grid_.pointToCell({pose.pose.position.x, pose.pose.position.y});
+        auto c = grid_.pointToCell(toPoint2f(pose.pose.position));
         if (grid_.hasCell(c)) {
           VertexId v = grid_.cellId(c);
-          if (std::isfinite(astar->pathCost(v)) &&
+          if (std::isfinite(astar.pathCost(v)) &&
               naex::grid::costsInBounds(grid_.costs(v), max_costs_) &&
-              astar->visited()[v]) {
+              astar.visited()[v]) {
             // reachable
             goal = v;
             goal_path_index = i;
@@ -321,8 +340,7 @@ class MulePlanner {
                             size_t start_index = 0) const {
       for (size_t i = start_index; i < path.poses.size(); ++i) {
         const auto &pose = path.poses[i];
-        auto cell = grid_.pointToCell(
-            {pose.pose.position.x, pose.pose.position.y});
+        auto cell = grid_.pointToCell(toPoint2f(pose.pose.position));
         if (!grid_.hasCell(cell)) {
           continue;
         }
@@ -406,8 +424,9 @@ class MulePlanner {
     std::pair<float,VertexId> getNearestTraversableVertex() {
       // Use the nearest traversable point to robot as the starting point.
       float best_dist = std::numeric_limits<float>::infinity();
-      VertexId best_v = INVALID_VERTEX;
-      for (VertexId v = 0; v < grid_.size(); ++v) {
+      VertexId best_v = INVALID_VERTEX_ID;
+      const VertexId n = static_cast<VertexId>(grid_.size());
+      for (VertexId v = 0; v < n; ++v) {
         if (!naex::grid::costsInBounds(grid_.costs(v), max_costs_)) {
           continue;
         }
@@ -418,7 +437,7 @@ class MulePlanner {
           best_dist = dist;
         }
       }
-      if (best_v != INVALID_VERTEX) {
+      if (best_v != INVALID_VERTEX_ID) {
         RCLCPP_INFO(nh_->get_logger(),
         "Closest traversable point to start: %s (dist %.3f).",
         format(toVec3(grid_.point(best_v))).c_str(), best_dist);
@@ -455,6 +474,8 @@ class MulePlanner {
 
     nav_msgs::msg::Path path_;
     Grid grid_{};
+    /// Reused A* buffers (P2); see cloudCb().
+    ShortestPaths shortest_paths_;
 
     std::mutex mutex_;
 };
