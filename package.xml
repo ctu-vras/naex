@@ -15,23 +15,40 @@
   <depend>boost</depend>
   <depend>eigen</depend>
   <depend>geometry_msgs</depend>
-  <!-- Used by the ROS 1 files being ported (map.h needs FLANN, which needs lz4). -->
+  <!-- map.h and traversability.h use FLANN; its serializer needs liblz4. -->
   <depend>libflann-dev</depend>
-  <depend>lz4</depend>
+  <depend>liblz4-dev</depend>
   <depend>nav2_msgs</depend>
   <depend>nav_msgs</depend>
   <depend>rclcpp</depend>
+  <depend>rclcpp_components</depend>
   <depend>sensor_msgs</depend>
   <depend>std_msgs</depend>
   <depend>tf2</depend>
   <depend>tf2_eigen</depend>
   <depend>tf2_ros</depend>
 
+  <!-- Python nodes (scripts/*.py). -->
+  <exec_depend>python3-numpy</exec_depend>
+  <exec_depend>python3-scipy</exec_depend>
+  <exec_depend>rclpy</exec_depend>
+  <!-- ros2_numpy is a source package of this workspace (src/ros2_numpy);
+       it is not in the public rosdep index. -->
+  <exec_depend>ros2_numpy</exec_depend>
+  <exec_depend>tf2_ros_py</exec_depend>
+  <exec_depend>tf_transformations</exec_depend>
+  <exec_depend>visualization_msgs</exec_depend>
+
+  <!-- Launch files. -->
   <exec_depend>ament_index_python</exec_depend>
   <exec_depend>launch</exec_depend>
   <exec_depend>launch_ros</exec_depend>
-  <exec_depend>rclpy</exec_depend>
+  <exec_depend>pcl_ros</exec_depend>
+  <exec_depend>point_cloud_transport</exec_depend>
+  <exec_depend>ros2bag</exec_depend>
+  <exec_depend>rosbag2_transport</exec_depend>
   <exec_depend>rviz2</exec_depend>
+  <exec_depend>topic_tools</exec_depend>
 
   <test_depend>ament_cmake_gtest</test_depend>
   <test_depend>ament_lint_auto</test_depend>

@@ -3,8 +3,6 @@
 #include <memory>
 #include <mutex>
 
-// #define K_NEIGHBORS 32
-
 namespace naex {
 typedef std::mutex Mutex;
 typedef std::recursive_mutex RMutex;
@@ -139,7 +137,7 @@ public:
   Neighborhood() {}
 
   // TODO: Make K_NEIGHBORS a parameter.
-  static const Index K_NEIGHBORS = 48;
+  static constexpr Index K_NEIGHBORS = 48;
   Value position_[3] = {std::numeric_limits<Value>::quiet_NaN(),
                         std::numeric_limits<Value>::quiet_NaN(),
                         std::numeric_limits<Value>::quiet_NaN()};

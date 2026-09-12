@@ -25,6 +25,7 @@ exploration behaviour. The last request is (by default) repeated periodically at
 | `cost_fields` | string[] | `[]` |
 | `which_cloud` | int[] | `[]` |
 | `cloud_weights` | double[] | `[]` |
+| `cloud_levels` | int[] | `[]` (cloud *i* into cost layer *i*) |
 | `map_frame` | string | `map` |
 | `robot_frame` | string | `base_footprint` |
 | `tf_timeout` | double | 3.0 |
@@ -35,6 +36,7 @@ exploration behaviour. The last request is (by default) repeated periodically at
 | `neighborhood` | int | 8 (4 or 8) |
 | `num_input_clouds` | int | 1 |
 | `input_queue_size` | int | 2 |
+| `sensor_data_qos` | bool | false (true: best-effort input subscriptions) |
 | `max_costs` | double[] | NaN per cost field / input cloud |
 | `default_costs` | double[] | 1.0 per cost field / input cloud |
 | `planning_freq` | double | 1.0 (Hz; <= 0 disables re-planning) |
@@ -60,7 +62,6 @@ Parameter types are strict: every floating-point parameter is a `double`
 #### Published topics
 
 - `map` [sensor_msgs/msg/PointCloud2] — the whole cost grid.
-- `local_map` [sensor_msgs/msg/PointCloud2] — grid around the robot.
 - `path` [[nav_msgs/msg/Path](https://docs.ros2.org/latest/api/nav_msgs/msg/Path.html)] — planned path.
 - `planning_freq` [std_msgs/msg/Float32] — the frequency the planner replans at.
 

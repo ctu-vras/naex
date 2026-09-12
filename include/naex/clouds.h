@@ -471,7 +471,7 @@ void copy_points(const sensor_msgs::msg::PointCloud2 &input, const C &indices,
   const auto in_ptr = input.data.data();
   uint8_t *out_ptr = output.data.data();
   auto it = indices.begin();
-  for (Index i = 0; i != indices.size(); ++i, ++it) {
+  for (size_t i = 0; i != indices.size(); ++i, ++it) {
     std::copy(in_ptr + (*it) * input.point_step,
               in_ptr + (*it + 1) * input.point_step,
               out_ptr + i * output.point_step);
