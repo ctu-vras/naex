@@ -101,6 +101,7 @@ add_executable(mule_planner src/mule_planner_node.cpp)
 target_include_directories(mule_planner PRIVATE
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>)
 target_link_libraries(mule_planner PRIVATE
+  naex_core
   Boost::graph
   Eigen3::Eigen
   rclcpp::rclcpp
