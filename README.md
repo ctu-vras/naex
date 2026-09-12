@@ -72,6 +72,8 @@ tested as *f* > 1e9 and not with `isfinite` after an A\* run
 | `which_cloud` | int[] | `[]` |
 | `cloud_weights` | double[] | `[]` |
 | `cloud_levels` | int[] | `[]` (cloud *i* into cost layer *i*) |
+| `min_cloud_values` | double[] | `-inf` per cost field (no filtering) |
+| `inflation_radius` | double[] | `0.0` per cost field (m; disabled) |
 | `map_frame` | string | `map` |
 | `robot_frame` | string | `base_footprint` |
 | `request_tf_timeout` | double | 0.5 (every TF lookup on the `get_plan` path) |
@@ -128,6 +130,25 @@ multiplied by `cloud_weights[i]` for you; a finite entry there overrides
 be changed at runtime as a recovery behaviour — the node watches it with a
 parameter callback and the next planning cycle picks the new bound up, because
 the per-cell cost cache the search uses is rebuilt on every search.
+
+##### Segmentation input: `min_cloud_values` and `inflation_radius`
+
+Both are parallel to `cost_fields` (and validated at start-up the same way as
+`which_cloud`/`cloud_weights`: a non-empty vector of the wrong length is a
+configuration error). They exist for a binary segmentation cloud, where a
+cost field is 0 (traversable) almost everywhere and only the rare obstacle
+point should touch the grid. `min_cloud_values[j]` gates *creation*: a point
+only creates a new cell for cost field *j* when its value is strictly greater
+than the threshold; a cell that already exists is still updated regardless
+(so a later 0 does clear a previously-flagged cell, it just cannot seed one).
+`inflation_radius[j]` (metres) additionally stamps an above-threshold point's
+cost onto every *other* cell within that radius, creating them as needed,
+through the same forget-factor blend `update_cell_cost` uses -- meant to
+inflate a segmented obstacle so the planner keeps clear of its footprint, not
+just its centre point. Both default to a no-op (`-inf`, `0.0`), so the
+default ingestion path is unaffected and pays no extra hashing; when
+`map_range` is set, inflation never creates a cell beyond it (it would be
+evicted on the next cycle anyway).
 
 ##### Bounding the map: `input_range` and `map_range`
 

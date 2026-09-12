@@ -489,6 +489,72 @@ TEST(SidelobeDisc, MatchesBruteForceOnRandomGrid) {
   EXPECT_EQ(grid.size(), size_before);
 }
 
+TEST(InflationDisc, CreatesCellsAndSkipsCentre) {
+  // 1 m cells, forget_factor 1 (pure overwrite on first touch), nothing
+  // pre-existing: every cell within radius of (2.5, 2.5) except the centre
+  // cell itself must be created and set.
+  Grid grid(1.f, 1.f, Costs(0.f, 0.f, 0.f, 0.f));
+  naex::grid::inflate_disc_cost(grid, 3, Point2f(2.5f, 2.5f), 1.0f, 10.f);
+
+  const std::set<std::pair<int, int>> expected_new = {{1, 2}, {3, 2},
+                                                       {2, 1}, {2, 3}};
+  std::set<std::pair<int, int>> affected;
+  for (naex::grid::CellId v = 0; v < grid.size(); ++v) {
+    affected.insert({grid.cell(v).x, grid.cell(v).y});
+    EXPECT_FLOAT_EQ(grid.costs(v)[3], 10.f);
+  }
+  EXPECT_EQ(affected, expected_new);
+  EXPECT_FALSE(grid.has_cell(Cell(2, 2))) << "the centre cell is the caller's job";
+}
+
+TEST(InflationDisc, BlendsWithForgetFactorInsteadOfOverwriting) {
+  // forget_factor 0.5, default costs unset (NaN): an already-set cell must
+  // blend (w0*old + w1*new), not get clobbered like apply_disc_cost() would.
+  Grid grid(1.f, 0.5f);
+  const Cell existing(1, 2);
+  grid.costs(grid.cell_id(existing))[3] = 4.f;
+  naex::grid::inflate_disc_cost(grid, 3, Point2f(2.5f, 2.5f), 1.0f, 10.f);
+  // w0 * 4 + w1 * 10 with w0 = 1 - forget_factor = 0.5, w1 = forget_factor.
+  EXPECT_FLOAT_EQ(grid.costs(grid.cell_id(existing))[3], 7.f);
+  // A brand-new cell's layer starts at NaN, so update_cost_at() takes the
+  // first cost verbatim instead of blending against it.
+  EXPECT_FLOAT_EQ(grid.costs(grid.cell_id(Cell(3, 2)))[3], 10.f);
+}
+
+TEST(InflationDisc, RespectsBoundOriginForNewCellsOnly) {
+  // bound_origin/bound_range emulate map_range: a cell that does not exist
+  // yet must not be created outside the bound (it would be evicted right
+  // away), but a cell that already exists inside the disc must still be
+  // updated even if it happens to be outside the bound (eviction's job, not
+  // inflation's).
+  Grid grid(1.f, 1.f, Costs(0.f, 0.f, 0.f, 0.f));
+  const Cell far_existing(3, 2); // inside the disc, outside the bound below
+  grid.cell_id(far_existing);
+  const Point2f origin(2.5f, 2.5f);
+  const float bound_range = 0.6f; // smaller than the disc radius (1.0 m)
+
+  naex::grid::inflate_disc_cost(grid, 3, origin, 1.0f, 10.f, &origin,
+                                bound_range);
+
+  EXPECT_FALSE(grid.has_cell(Cell(1, 2)))
+      << "outside the bound and did not exist: must not be created";
+  EXPECT_TRUE(grid.has_cell(far_existing));
+  EXPECT_FLOAT_EQ(grid.costs(grid.cell_id(far_existing))[3], 10.f)
+      << "already existed: must still be updated regardless of the bound";
+}
+
+TEST(InflationDisc, DegenerateInputsAreNoOps) {
+  Grid grid(1.f, 1.f, Costs(0.f, 0.f, 0.f, 0.f));
+  const size_t size_before = grid.size();
+  const float kNaNf = std::numeric_limits<float>::quiet_NaN();
+  naex::grid::inflate_disc_cost(grid, 3, Point2f(0.f, 0.f), -1.f, 10.f);
+  naex::grid::inflate_disc_cost(grid, 3, Point2f(0.f, 0.f), 0.f, 10.f);
+  naex::grid::inflate_disc_cost(grid, 3, Point2f(kNaNf, 0.f), 1.f, 10.f);
+  naex::grid::inflate_disc_cost(grid, 3, Point2f(0.f, 0.f), kNaNf, 10.f);
+  naex::grid::inflate_disc_cost(grid, -1, Point2f(0.f, 0.f), 1.f, 10.f);
+  EXPECT_EQ(grid.size(), size_before);
+}
+
 TEST(NearestCell, EmptyPredicateAndTieBreak) {
   Grid grid = make_dense_grid(3);
   EXPECT_EQ(naex::grid::nearest_cell(grid, Point2f(0.f, 0.f),

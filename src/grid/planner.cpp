@@ -95,6 +95,10 @@ Planner::Planner(rclcpp::Node::SharedPtr nh) : nh_(nh) {
                                                                cloud_weights_);
   cloud_levels_ = nh_->declare_parameter<std::vector<long int>>("cloud_levels",
                                                                 cloud_levels_);
+  min_cloud_values_ = nh_->declare_parameter<std::vector<double>>(
+      "min_cloud_values", min_cloud_values_);
+  inflation_radius_ = nh_->declare_parameter<std::vector<double>>(
+      "inflation_radius", inflation_radius_);
   map_frame_ = nh_->declare_parameter<std::string>("map_frame", map_frame_);
   robot_frame_ =
       nh_->declare_parameter<std::string>("robot_frame", robot_frame_);
@@ -1147,16 +1151,21 @@ void Planner::receive_cloud(
   Eigen::Isometry3f transform(tf2::transformToEigen(cloud_to_map.transform));
   sensor_msgs::PointCloud2ConstIterator<float> x_it(*input, position_field_);
 
-  // Sizes of which_cloud_, cloud_weights_ and cloud_levels_ are checked
-  // against cost_fields_ in the constructor (B15).
+  // Sizes of which_cloud_, cloud_weights_, cloud_levels_, min_cloud_values_
+  // and inflation_radius_ are checked against cost_fields_ in the
+  // constructor (B15).
   std::vector<int> levels;
   std::vector<float> weights;
+  std::vector<double> min_values;
+  std::vector<double> inflation_radii;
   std::vector<sensor_msgs::PointCloud2ConstIterator<float>> cost_iters;
 
   for (size_t j = 0; j < cost_fields_.size(); ++j) {
     if (which_cloud_[j] == cloud_index) {
       levels.push_back(static_cast<int>(cloud_levels_[j]));
       weights.push_back(static_cast<float>(cloud_weights_[j]));
+      min_values.push_back(min_cloud_values_[j]);
+      inflation_radii.push_back(inflation_radius_[j]);
       cost_iters.push_back(sensor_msgs::PointCloud2ConstIterator<float>(
           *input, cost_fields_[j]));
     }
@@ -1208,20 +1217,47 @@ void Planner::receive_cloud(
       }
       continue;
     }
-    // Resolved lazily, so a point whose every cost field is non-finite
-    // still creates no cell, exactly as before the cache.
+    // c is resolved lazily (no hashing) below; last_id/last_cell (the
+    // spatial-coherence cache) is only touched once some field actually
+    // needs the cell to exist.
     bool resolved = false;
+    Cell c{};
     for (size_t j = 0; j < levels.size(); ++j) {
-      if (std::isfinite(cost_iters[j][0])) {
+      const float value = cost_iters[j][0];
+      // Non-finite values (e.g. NaN "no reading") are always ignored.
+      if (std::isfinite(value)) {
         if (!resolved) {
-          const Cell c = grid_.point_to_cell(p);
+          c = grid_.point_to_cell(p);
+          resolved = true;
+        }
+        // The threshold only gates *creation* of a new cell: an
+        // at/below-threshold value (e.g. traversable=0 in a binary
+        // segmentation cloud) is still applied to a cell that already
+        // exists, but never seeds one. With the default -inf, this is
+        // always true and grid_.has_cell() is never called, so the default
+        // path pays no extra hashing.
+        const bool touch =
+            value > static_cast<float>(min_values[j]) || grid_.has_cell(c);
+        if (touch) {
           if (last_id == INVALID_CELL_ID || !(c == last_cell)) {
             last_cell = c;
             last_id = grid_.cell_id(c);
           }
-          resolved = true;
+          grid_.update_cost_at(last_id, levels[j], weights[j] * value);
+          // Inflate obstacles: an above-threshold point also stamps its cost
+          // onto neighbouring cells within inflation_radii[j] (meters),
+          // seeding new cells as needed but never past map_range_ (would be
+          // evicted immediately). Disabled (0) by default and for the
+          // continuous geometric traversability layer.
+          if (value > static_cast<float>(min_values[j]) &&
+              inflation_radii[j] > 0.0) {
+            inflate_disc_cost(grid_, levels[j], p,
+                              static_cast<float>(inflation_radii[j]),
+                              weights[j] * value,
+                              map_range_ > 0.f ? &origin : nullptr,
+                              map_range_);
+          }
         }
-        grid_.update_cost_at(last_id, levels[j], weights[j] * cost_iters[j][0]);
       }
       ++cost_iters[j];
     }
@@ -1379,6 +1415,16 @@ void Planner::check_input_parameters(int num_input_clouds) {
     }
   }
   check("cloud_levels", cloud_levels_.size());
+
+  if (min_cloud_values_.empty() && n > 0) {
+    min_cloud_values_.assign(n, -std::numeric_limits<double>::infinity());
+  }
+  check("min_cloud_values", min_cloud_values_.size());
+
+  if (inflation_radius_.empty() && n > 0) {
+    inflation_radius_.assign(n, 0.0);
+  }
+  check("inflation_radius", inflation_radius_.size());
 
   for (size_t j = 0; j < n; ++j) {
     if (which_cloud_[j] < 0 || which_cloud_[j] >= num_input_clouds) {

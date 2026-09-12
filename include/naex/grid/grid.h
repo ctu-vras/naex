@@ -747,6 +747,65 @@ inline void apply_disc_cost(Grid &grid, int layer, const Point2f &center,
 }
 
 /**
+ * Blend @p cost into layer @p level of every cell (existing or newly
+ * created) whose centre lies within @p radius of @p center (2-D Euclidean,
+ * boundary inclusive), except the cell containing @p center itself -- the
+ * caller has already updated that one directly.
+ *
+ * Used to inflate a binary segmentation obstacle onto its neighbourhood
+ * (Planner::receive_cloud's inflation_radius). Unlike apply_disc_cost() (a
+ * direct overwrite used by the sidelobes ad-hoc layer, which must never
+ * create a cell), this goes through update_cell_cost()'s forget-factor blend
+ * and creates cells as needed, because an obstacle can inflate into
+ * unmapped space.
+ *
+ * When @p bound_origin is not null, a cell that does not exist yet is only
+ * created if accept_input_point(grid, cell_centre, *bound_origin,
+ * bound_range) holds -- the same crop the input point itself had to pass --
+ * so inflation never creates cells beyond map_range that the next eviction
+ * would immediately drop. An already-existing cell is always updated,
+ * regardless of the bound: eviction (not this function) is what retires it.
+ */
+inline void inflate_disc_cost(Grid &grid, int level, const Point2f &center,
+                              float radius, Cost cost,
+                              const Point2f *bound_origin = nullptr,
+                              float bound_range = 0.f) {
+  if (!is_valid_layer(level)) {
+    return;
+  }
+  if (!std::isfinite(center.x) || !std::isfinite(center.y) ||
+      !std::isfinite(radius) || !(radius > 0.f)) {
+    return;
+  }
+  if (!in_cell_range(grid, center)) {
+    return;
+  }
+  const Cell c0 = grid.point_to_cell(center);
+  const Cell lo = grid.point_to_cell({center.x - radius, center.y - radius});
+  const Cell hi = grid.point_to_cell({center.x + radius, center.y + radius});
+  const float radius_sq = radius * radius;
+  for (int32_t x = lo.x; x <= hi.x; ++x) {
+    for (int32_t y = lo.y; y <= hi.y; ++y) {
+      if (x == c0.x && y == c0.y) {
+        continue; // centre cell is updated by the caller
+      }
+      const Cell c(static_cast<int16_t>(x), static_cast<int16_t>(y));
+      const Point2f p = grid.cell_to_point(c);
+      const float dx = p.x - center.x;
+      const float dy = p.y - center.y;
+      if (dx * dx + dy * dy > radius_sq) {
+        continue;
+      }
+      if (bound_origin != nullptr && grid.find_cell(c) == INVALID_CELL_ID &&
+          !accept_input_point(grid, p, *bound_origin, bound_range)) {
+        continue;
+      }
+      grid.update_cell_cost(c, level, cost);
+    }
+  }
+}
+
+/**
  * Cell whose centre is nearest to @p p among the cells accepted by
  * @p accept(CellId), or INVALID_CELL_ID if none is.
  *

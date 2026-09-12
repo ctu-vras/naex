@@ -387,6 +387,17 @@ protected:
   std::vector<long int> which_cloud_;
   std::vector<double> cloud_weights_;
   std::vector<long int> cloud_levels_;
+  /// Per-cost-field threshold (parallel to cost_fields_, checked in
+  /// check_input_parameters()): a point's cost field j only *creates* a cell
+  /// when its value is > min_cloud_values_[j]; an already-existing cell is
+  /// still updated regardless. -inf (the default) never gates creation, so
+  /// the default ingestion path does no extra work.
+  std::vector<double> min_cloud_values_;
+  /// Per-cost-field obstacle inflation radius in meters (parallel to
+  /// cost_fields_): an above-threshold point also stamps its cost onto every
+  /// other cell within this radius (see inflate_disc_cost() in grid.h). 0.0
+  /// (the default) disables inflation for that layer.
+  std::vector<double> inflation_radius_;
   float max_cloud_age_{5.0};
   /// Radius (m) around the sensor outside which input points are discarded;
   /// <= 0 or NaN disables the crop (P6a).  Bounds the per-cloud work, not the
