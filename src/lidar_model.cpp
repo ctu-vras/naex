@@ -1,4 +1,6 @@
 #include "naex/clouds.h"
+#include "naex/geom.h"
+#include "naex/spherical_projection.h"
 #include "naex/timer.h"
 #include <memory>
 #include <rclcpp/rclcpp.hpp>

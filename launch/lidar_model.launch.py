@@ -13,8 +13,8 @@ def generate_launch_description():
     use_sim_time = LaunchConfiguration('use_sim_time')
 
     return LaunchDescription([
-        DeclareLaunchArgument('points', default_value='X1/front_rgbd/points'),
-        DeclareLaunchArgument('points_slow', default_value='X1/points_slow'),
+        DeclareLaunchArgument('points', default_value='points'),
+        DeclareLaunchArgument('points_slow', default_value='points_slow'),
         DeclareLaunchArgument('points_slow_freq', default_value='1.0'),
         DeclareLaunchArgument('use_sim_time', default_value='false'),
 

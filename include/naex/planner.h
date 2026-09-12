@@ -165,7 +165,6 @@ protected:
   std::vector<std::string> robot_frames_{};
   float max_cloud_age_{5.0};
   float input_range_{10.0};
-  bool filter_robots_{false};
 
   int neighborhood_knn_{12};
   float neighborhood_radius_{0.5};
