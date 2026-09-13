@@ -568,6 +568,68 @@ TEST(NearestCell, EmptyPredicateAndTieBreak) {
   EXPECT_EQ(grid.cell(v).y, 0);
 }
 
+TEST(SnapGoalCell, GoalAlreadyOnSnapCellReturnsInvalid) {
+  // Default level-0 cost 5 (above max_cost 1) so only explicitly set cells
+  // qualify as snap cells.
+  Grid grid(1.f, 1.f, Costs(5.f, kNaN, kNaN, kNaN));
+  grid.cell_costs(Cell(0, 0))[0] = 0.5f; // centre (0.5, 0.5): a snap cell
+  const Point2f goal(0.5f, 0.5f);
+  EXPECT_EQ(naex::grid::snap_goal_cell(grid, goal, /*radius=*/5.f, /*level=*/0,
+                                       /*max_cost=*/1.f, Costs()),
+            naex::grid::INVALID_CELL_ID);
+}
+
+TEST(SnapGoalCell, SnapsToNearestCellWithinRadius) {
+  Grid grid(1.f, 1.f, Costs(5.f, kNaN, kNaN, kNaN));
+  grid.cell_costs(Cell(2, 0))[0] = 0.5f; // centre (2.5, 0.5), dist 2 from goal
+  grid.cell_costs(Cell(5, 0))[0] = 0.5f; // centre (5.5, 0.5), dist 5 from goal
+  const Point2f goal(0.5f, 0.5f);
+  const naex::grid::CellId v = naex::grid::snap_goal_cell(
+      grid, goal, /*radius=*/6.f, /*level=*/0, /*max_cost=*/1.f, Costs());
+  ASSERT_NE(v, naex::grid::INVALID_CELL_ID);
+  EXPECT_EQ(grid.cell(v).x, 2);
+  EXPECT_EQ(grid.cell(v).y, 0);
+}
+
+TEST(SnapGoalCell, NoSnapCellWithinRadiusReturnsInvalid) {
+  Grid grid(1.f, 1.f, Costs(5.f, kNaN, kNaN, kNaN));
+  grid.cell_costs(Cell(5, 0))[0] = 0.5f; // dist 5 from goal, outside radius 3
+  const Point2f goal(0.5f, 0.5f);
+  EXPECT_EQ(naex::grid::snap_goal_cell(grid, goal, /*radius=*/3.f, /*level=*/0,
+                                       /*max_cost=*/1.f, Costs()),
+            naex::grid::INVALID_CELL_ID);
+}
+
+TEST(SnapGoalCell, CellViolatingMaxCostsIsSkipped) {
+  Grid grid(1.f, 1.f, Costs(5.f, 5.f, kNaN, kNaN));
+  // Level-0 cost alone would qualify, but level 1 is out of max_costs bounds,
+  // so this cell must not be treated as a snap cell.
+  Costs &c = grid.cell_costs(Cell(2, 0));
+  c[0] = 0.5f;
+  c[1] = 10.f;
+  const Point2f goal(0.5f, 0.5f);
+  const Costs max_costs(kNaN, 1.f, kNaN, kNaN); // bound only layer 1
+  EXPECT_EQ(naex::grid::snap_goal_cell(grid, goal, /*radius=*/6.f, /*level=*/0,
+                                       /*max_cost=*/1.f, max_costs),
+            naex::grid::INVALID_CELL_ID);
+}
+
+TEST(SnapGoalCell, InvalidLevelOrRadiusReturnsInvalid) {
+  Grid grid(1.f, 1.f, Costs(5.f, kNaN, kNaN, kNaN));
+  grid.cell_costs(Cell(2, 0))[0] = 0.5f;
+  const Point2f goal(0.5f, 0.5f);
+  EXPECT_EQ(naex::grid::snap_goal_cell(grid, goal, 6.f, /*level=*/-1, 1.f,
+                                       Costs()),
+            naex::grid::INVALID_CELL_ID);
+  EXPECT_EQ(naex::grid::snap_goal_cell(
+                grid, goal, 6.f, /*level=*/static_cast<int>(Costs::kSize),
+                1.f, Costs()),
+            naex::grid::INVALID_CELL_ID);
+  EXPECT_EQ(
+      naex::grid::snap_goal_cell(grid, goal, /*radius=*/0.f, 0, 1.f, Costs()),
+      naex::grid::INVALID_CELL_ID);
+}
+
 TEST(Planning, TwentyByTwentyWithGapExactCost) {
   // 20x20 unit cells, free cost 0, wall on column x = 10 for y in [0, 17].
   // The only way across is the gap at (10, 18) / (10, 19).

@@ -833,5 +833,58 @@ CellId nearest_cell(const Grid &grid, const Point2f &p, Accept accept) {
   return best;
 }
 
+/**
+ * Cell to move an off-cell goal to before planning, or INVALID_CELL_ID to
+ * leave it where it is.
+ *
+ * A "snap cell" is one whose costs[level] is finite and <= max_cost, and
+ * which also satisfies costs_in_bounds(costs, max_costs). Returns
+ * INVALID_CELL_ID -- i.e. don't move the goal -- when @p level is not a
+ * valid layer, @p radius is not a finite positive number, @p goal's own
+ * cell already exists and is a snap cell, or no snap cell lies within
+ * @p radius (2-D distance to the cell centre, inclusive) of @p goal.
+ * Otherwise returns the nearest snap cell.
+ *
+ * Reuses nearest_cell() with an accept predicate that ignores @p radius,
+ * then checks the result against it: the nearest accepted cell is the
+ * global minimum distance among snap cells, so if it is beyond @p radius no
+ * snap cell is within it either, and if it is within @p radius it is exactly
+ * the nearest one that is.
+ *
+ * Lets a waypoint placed just off a low-cost layer (e.g. GNSS/OSM error
+ * beside a road) plan to the edge of that layer instead of past it; see
+ * Planner::plan().
+ */
+inline CellId snap_goal_cell(const Grid &grid, const Point2f &goal,
+                             float radius, int level, Cost max_cost,
+                             const Costs &max_costs) {
+  if (!is_valid_layer(level)) {
+    return INVALID_CELL_ID;
+  }
+  if (!(radius > 0.f) || !std::isfinite(radius)) {
+    return INVALID_CELL_ID;
+  }
+  const auto is_snap_cell = [&](CellId v) {
+    const Cost c = grid.costs(v)[static_cast<size_t>(level)];
+    return std::isfinite(c) && c <= max_cost &&
+           costs_in_bounds(grid.costs(v), max_costs);
+  };
+  const CellId goal_id = grid.find_cell(grid.point_to_cell(goal));
+  if (goal_id != INVALID_CELL_ID && is_snap_cell(goal_id)) {
+    return INVALID_CELL_ID;
+  }
+  const CellId best = nearest_cell(grid, goal, is_snap_cell);
+  if (best == INVALID_CELL_ID) {
+    return INVALID_CELL_ID;
+  }
+  const Point2f p = grid.point(best);
+  const float dx = p.x - goal.x;
+  const float dy = p.y - goal.y;
+  if (std::sqrt(dx * dx + dy * dy) > radius) {
+    return INVALID_CELL_ID;
+  }
+  return best;
+}
+
 } // namespace grid
 } // namespace naex

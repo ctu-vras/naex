@@ -97,6 +97,9 @@ tested as *f* > 1e9 and not with `isfinite` after an A\* run
 | `frontier_max_neighbors` | int | 5 |
 | `max_relative_dist_to_goal` | double | 2.0 |
 | `frontier_dist_from_goal_cost` | double | 1.0 (weight of a frontier's euclidean distance to the goal in its score; 1.0 reproduces the plain A\* *f* value, higher penalizes a frontier further from the goal more) |
+| `goal_snap_radius` | double | 0.0 m (0 disables goal snapping) |
+| `goal_snap_level` | int | 0 (cost layer goal snapping checks) |
+| `goal_snap_max_cost` | double | 0.0 (max `goal_snap_level` cost, weighted, of a cell the goal may snap to) |
 | `max_start_to_traversable_dist` | double | 2.0 m |
 | `append_goal_pose` | bool | true (append the requested goal as the last pose of a searched path; the straight-line fallback always has exactly two poses regardless) |
 | `publish_occupancy_grid` | bool | true |

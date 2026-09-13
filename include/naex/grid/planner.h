@@ -426,6 +426,14 @@ protected:
   /// would.
   float frontier_dist_from_goal_cost_{1.0};
 
+  /// Goal snapping (see snap_goal_cell() in grid.h): a goal not on a cell
+  /// whose goal_snap_level_ cost is at most goal_snap_max_cost_ moves to the
+  /// nearest such cell within goal_snap_radius_ (m). 0 (the default)
+  /// disables it.
+  float goal_snap_radius_{0.0};
+  int goal_snap_level_{0};
+  float goal_snap_max_cost_{0.0};
+
   // Transforms and frames
   std::shared_ptr<tf2_ros::Buffer> tf_{};
   std::shared_ptr<tf2_ros::TransformListener> tf_sub_;

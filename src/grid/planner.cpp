@@ -223,6 +223,17 @@ Planner::Planner(rclcpp::Node::SharedPtr nh) : nh_(nh) {
   frontier_dist_from_goal_cost_ = nh_->declare_parameter<float>(
       "frontier_dist_from_goal_cost", frontier_dist_from_goal_cost_);
 
+  // Goal snapping (see snap_goal_cell() in grid.h): a goal not on a cell
+  // whose goal_snap_level cost is at most goal_snap_max_cost (weighted)
+  // moves to the nearest such cell within goal_snap_radius (m). 0 radius =
+  // off.
+  goal_snap_radius_ =
+      nh_->declare_parameter<float>("goal_snap_radius", goal_snap_radius_);
+  goal_snap_level_ =
+      nh_->declare_parameter<int>("goal_snap_level", goal_snap_level_);
+  goal_snap_max_cost_ = nh_->declare_parameter<float>("goal_snap_max_cost",
+                                                      goal_snap_max_cost_);
+
   // Occupancy grid for the nav2 global costmap.
   publish_occupancy_grid_ = nh_->declare_parameter<bool>(
       "publish_occupancy_grid", publish_occupancy_grid_);
@@ -900,6 +911,26 @@ bool Planner::plan(const geometry_msgs::msg::PoseStamped &start_in,
   if (!is_valid(goal.pose.position)) {
     RCLCPP_WARN(nh_->get_logger(), "Goal not valid.");
     return false;
+  }
+
+  if (goal_snap_radius_ > 0.f) {
+    const CellId v_snap =
+        snap_goal_cell(grid_, Point2f(p1.x(), p1.y()), goal_snap_radius_,
+                       goal_snap_level_, goal_snap_max_cost_,
+                       max_costs_absolute_);
+    if (v_snap != INVALID_CELL_ID) {
+      const Point2f p_snap = grid_.point(v_snap);
+      const float dist = std::hypot(p_snap.x - p1.x(), p_snap.y - p1.y());
+      RCLCPP_INFO(
+          nh_->get_logger(),
+          "Goal %s snapped %.2f m to %s (level %d cost %.2f <= %.2f).",
+          format(p1).c_str(), dist, format(to_vec3(p_snap)).c_str(),
+          goal_snap_level_,
+          grid_.costs(v_snap)[static_cast<size_t>(goal_snap_level_)],
+          goal_snap_max_cost_);
+      p1.x() = p_snap.x;
+      p1.y() = p_snap.y;
+    }
   }
 
   // Is the goal inside the mapped area?  Only then can A* stop on it.
