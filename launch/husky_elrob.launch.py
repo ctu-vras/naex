@@ -99,6 +99,9 @@ def generate_launch_description():
                     # ("input_cloud_0", "terrain_map"),
                     ("input_cloud_0", "traversability_cloud"),
                     ("map_occupancy_grid", "naex/map_occupancy_grid"),
+                    # compute_path_to_pose became a private ("~/") action name;
+                    # keep the old global name for a caller that still uses it.
+                    ("grid_planner/compute_path_to_pose", "compute_path_to_pose"),
                 ],
             )
         ]

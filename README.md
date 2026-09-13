@@ -287,7 +287,7 @@ time spent in these lookups is the `tf=` field of `perf plan:`.
 
 #### Actions
 
-- `compute_path_to_pose` [[nav2_msgs/action/ComputePathToPose](https://docs.ros2.org/latest/api/nav2_msgs/action/ComputePathToPose.html)]
+- `~/compute_path_to_pose` [[nav2_msgs/action/ComputePathToPose](https://docs.ros2.org/latest/api/nav2_msgs/action/ComputePathToPose.html)]
   — a `nav2_util::SimpleActionServer`, spinning its execute callback on its
   own thread. The start pose is the current robot pose
   (`nav2_util::getCurrentPose(map_frame_, robot_frame_)`, timeout

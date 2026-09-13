@@ -351,7 +351,7 @@ Planner::Planner(rclcpp::Node::SharedPtr nh) : nh_(nh) {
   // mtx_ is what keeps that safe (see mtx_).
   action_server_ =
       std::make_unique<nav2_util::SimpleActionServer<ComputePathAction>>(
-          nh_, "compute_path_to_pose",
+          nh_, "~/compute_path_to_pose",
           std::bind(&Planner::compute_plan, this), nullptr,
           std::chrono::milliseconds(500), true);
   action_server_->activate();

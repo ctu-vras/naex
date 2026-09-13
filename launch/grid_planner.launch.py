@@ -13,7 +13,7 @@ def generate_launch_description():
                 parameters=[
                     {
                         "use_astar": True,
-                        "astar_max_range": 50.0,  # meters radius to perform search around the start vertex
+                        "astar_max_range": 20.0,  # meters radius to perform search around the start vertex
                         "frontier_min_dist": 2.0,  # generally keep this above lookahead point distance of controller
                         "frontier_max_neighbors": 7,  # probably don't change this
                         "max_relative_dist_to_goal": 2.0,
@@ -25,8 +25,8 @@ def generate_launch_description():
                         # position is naturally unexplored and at the same time there is obstacles all around
                         "max_start_to_traversable_dist": 2.0,
                         "position_field": "x",
-                        "map_frame": "local_odom",
-                        "robot_frame": "base_link",
+                        "map_frame": "FP_ENU0",
+                        "robot_frame": "odin1_base_link",
                         "max_cloud_age": 5.0,
                         # Cloud callbacks must never park the single-threaded
                         # executor on TF (P5), but the timeout still has to
@@ -64,13 +64,30 @@ def generate_launch_description():
                         # while the robot stands still; it also evicts after
                         # 0.25 * map_range of travel.
                         "evict_period": 10.0,
-                        "cell_size": 0.4,
-                        "forget_factor": 0.1,
-                        "cost_fields": ["geometric_cost"],
-                        "which_cloud": [0],
+                        "cell_size": 0.2,
+                        "forget_factor": 1.0,
+                        "cost_fields": ["cost", "traversability"],
+                        "which_cloud": [0, 1],
                         # Cost layer each cost field is written to; defaults to
                         # the index of the field.  Must not name adhoc_layer.
-                        "cloud_levels": [0],
+                        "cloud_levels": [0, 1],
+                        # Per-cost-field threshold (parallel to cost_fields).
+                        # A point is only added to the grid for a cost field if its
+                        # value is strictly greater than the corresponding threshold.
+                        # Use -inf (default) to keep every point. E.g. for a binary
+                        # segmentation cloud, set 0.0 to only keep obstacle points (>0).
+                        "min_cloud_values": [
+                            float("-inf"), float("-inf"),
+                        ],
+                        # Per-cost-field obstacle inflation radius in meters
+                        # (parallel to cost_fields). For an above-threshold
+                        # (obstacle) point, its cost is also stamped onto every
+                        # neighbouring cell within this radius. 0.0 disables it.
+                        # Keep 0.0 for the continuous geometric layer; set a
+                        # positive value only for a binary segmentation cloud.
+                        "inflation_radius": [
+                            0.0, 0.0,
+                        ],
                         # Don't forget that cloud_weights are not relative, becuase in the planner they are combined
                         # with the euclidean length of the edge in meters.
                         # E.g. if we weight the geometry cloud by 10. and we get a 0.5 geometry cost, it tranlates to
@@ -78,27 +95,43 @@ def generate_launch_description():
                         # So we are saying that the path along this edge is equal to finding a different route to the same goal point
                         # of length 5 meters and with 0 cost.
                         "cloud_weights": [
-                            2.0,
+                            5.0, 1.0,
                         ],
                         "max_costs_relative": [
-                            0.8,
+                            100.0, 0.6,
                         ],
-                        "default_costs": [  # Careful that these are never multiplied by the cloud_weights!!!
-                            0.5
+                        "default_costs": [   # Careful that these are never multiplied by the cloud_weights!!!
+                            # Road layer: a cell no road point landed on (grass, or footway the camera has
+                            # not seen). road_cloud's cost runs 0 (centre) .. 1 (edge), x weight 5 = 0..5, so
+                            # at 5.0 grass cost the same as the outer half of the footway (2026-09-11 bags).
+                            15.0, 0.4,
                         ],
+                        # Used for finding the best frontier as temporary goal. The cost of the frontier is:
+                        # the AStar cost of getting there + euclidean_dist_to_goal * frontier_dist_from_goal_cost
+                        "frontier_dist_from_goal_cost": 1.5,
+                        # Goal snapping: a goal that is not on the road moves to the nearest road cell within
+                        # goal_snap_radius, so a waypoint beside the footway plans to the footway edge instead
+                        # of onto the grass. A road cell is one whose road-layer cost (level 0, weighted) is
+                        # <= goal_snap_max_cost: 3.5 = road_cloud cost 0.7, inside the outermost rim. Keep it
+                        # below default_costs[0], so a cell the road layer never saw never qualifies, and keep
+                        # the radius <= crl_commander's sequence_pass_lateral_dist, which then counts the
+                        # waypoint as passed. 0 radius = off.
+                        "goal_snap_radius": 4.5,
+                        "goal_snap_level": 0,
+                        "goal_snap_max_cost": 3.5,
                         "neighborhood": 8,
                         "planning_freq": 1.0,
-                        "num_input_clouds": 1,
+                        "num_input_clouds": 2,
                         "input_queue_size": 2,
                         "start_on_request": True,
                         "stop_on_goal": True,
                         "goal_reached_dist": 0.5,
-                        # Append the requested goal pose as the last pose of a
-                        # searched path, for a downstream goal checker; this is
-                        # the default, spelled out here explicitly.
-                        "append_goal_pose": True,
-                        # Ad-hoc cost parameters.
-                        "adhoc_costs": ["sidelobes"],
+                        # The snapped goal cell (see goal_snap_* above) would otherwise be followed by the
+                        # requested, off-road goal pose; the robot's elrob config did not append it either.
+                        "append_goal_pose": False,
+                        # Ad-hoc cost parameters; uncomment to enable
+                        # "adhoc_costs": [],
+                        #"adhoc_costs": ["nothing"],
                         "adhoc_layer": 3,
                         # Sidelobes strategy parameters
                         "sidelobes_offset_distance": 1.0,
@@ -108,7 +141,13 @@ def generate_launch_description():
                     }
                 ],
                 remappings=[
-                    ("input_cloud_0", "geometric_traversability_cloud"),
+                    #("input_cloud_0", "osm_grid"),
+                    ("input_cloud_0", "road_cloud"),
+                    # ("input_cloud_1", "unexplored_map"),
+                    ("input_cloud_1", "terrain_map"),
+                    # ("input_cloud_0", "traversability_cloud"),
+                    ("map_occupancy_grid", "naex/map_occupancy_grid"),
+                    ("grid_planner/compute_path_to_pose", "astar/compute_path_to_pose"),
                 ],
             )
         ]
