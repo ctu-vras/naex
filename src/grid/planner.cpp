@@ -29,12 +29,14 @@ namespace grid {
 
 namespace {
 
-/// Adds its lifetime to a PlanTimings field when it goes out of scope.
-///
-/// Used around the TF lookups of the request path: those are exactly the calls
-/// that can block for the whole timeout and then throw, and a plain
-/// "timer.seconds_elapsed() after the call" loses precisely that case -- the
-/// wait that matters most -- from the perf line.
+/**
+ * Adds its lifetime to a PlanTimings field when it goes out of scope.
+ *
+ * Used around the TF lookups of the request path: those are exactly the calls
+ * that can block for the whole timeout and then throw, and a plain
+ * "timer.seconds_elapsed() after the call" loses precisely that case -- the
+ * wait that matters most -- from the perf line.
+ */
 class ScopedTfTimer {
 public:
   explicit ScopedTfTimer(double &sink) : sink_(sink) {}
@@ -57,10 +59,12 @@ private:
 constexpr double kAdHocMaxStartOffset = 3.;
 constexpr double kAdHocMinStartOrientationW = 0.9;
 
-/// rviz-only marker for the selected frontier component: turquoise points
-/// kFrontierMarkerScale metres wide.  The colour components are the 0-255
-/// values of that turquoise rather than the 0-1 floats the message wants,
-/// which rviz clamps; kept as they are so the marker keeps its look.
+/**
+ * rviz-only marker for the selected frontier component: turquoise points
+ * kFrontierMarkerScale metres wide.  The colour components are the 0-255
+ * values of that turquoise rather than the 0-1 floats the message wants,
+ * which rviz clamps; kept as they are so the marker keeps its look.
+ */
 constexpr double kFrontierMarkerScale = 0.2;
 constexpr double kFrontierMarkerColorR = 64.0;
 constexpr double kFrontierMarkerColorG = 224.0;
@@ -106,7 +110,7 @@ Planner::Planner(rclcpp::Node::SharedPtr nh) : nh_(nh) {
       nh_->declare_parameter<std::string>("robot_frame", robot_frame_);
   // Cloud callbacks run on the only executor thread, so a long wait here
   // stalls the planning timer and the get_plan service; drop the frame
-  // instead (P5).  It still has to cover one TF period: with a 10 Hz TF the
+  // instead.  It still has to cover one TF period: with a 10 Hz TF the
   // replayed drops were "extrapolation into the future" by 1-6 ms, i.e. a
   // transform that would have been there one period later.
   cloud_tf_timeout_ =
@@ -120,9 +124,9 @@ Planner::Planner(rclcpp::Node::SharedPtr nh) : nh_(nh) {
 
   max_cloud_age_ =
       nh_->declare_parameter<float>("max_cloud_age", max_cloud_age_);
-  // P6a: crop of the input cloud around the sensor; <= 0 or NaN disables it.
+  // Crop of the input cloud around the sensor; <= 0 or NaN disables it.
   input_range_ = nh_->declare_parameter<float>("input_range", input_range_);
-  // P6b: bound of the grid itself; 0 (the default) keeps the pre-P6
+  // Bound of the grid itself; 0 (the default) keeps the old
   // behaviour, i.e. an unbounded map that only ever grows.
   map_range_ = nh_->declare_parameter<float>("map_range", map_range_);
   evict_period_ = nh_->declare_parameter<float>("evict_period", evict_period_);
@@ -141,7 +145,7 @@ Planner::Planner(rclcpp::Node::SharedPtr nh) : nh_(nh) {
       nh_->declare_parameter<bool>("sensor_data_qos", sensor_data_qos_);
 
   // Ad-hoc cost parameters.  Declared before check_input_parameters() because
-  // it rejects a cost field mapped onto the ad-hoc layer (P3's dirty-list
+  // it rejects a cost field mapped onto the ad-hoc layer (the dirty-list
   // clear assumes nothing else writes that layer).
   adhoc_costs_ = nh_->declare_parameter("adhoc_costs", adhoc_costs_);
   adhoc_layer_ = nh_->declare_parameter("adhoc_layer", adhoc_layer_);
@@ -150,7 +154,7 @@ Planner::Planner(rclcpp::Node::SharedPtr nh) : nh_(nh) {
 
   // Defaults: no cost bound and unit cost per input cloud.  Sizing the
   // vectors here (instead of reserving) used to prepend zeros, making every
-  // nonzero-cost cell untraversable by default (B2).
+  // nonzero-cost cell untraversable by default.
   std::vector<float> max_costs;
   std::vector<float> default_costs;
   max_costs.reserve(static_cast<size_t>(num_input_clouds));
@@ -285,7 +289,7 @@ Planner::Planner(rclcpp::Node::SharedPtr nh) : nh_(nh) {
   }
 
   // Reliable by default; flip sensor_data_qos to talk to a best-effort
-  // publisher without rebuilding (B10).
+  // publisher without rebuilding.
   const rclcpp::QoS input_qos =
       sensor_data_qos_
           ? rclcpp::QoS(rclcpp::SensorDataQoS(
@@ -356,7 +360,7 @@ Planner::Planner(rclcpp::Node::SharedPtr nh) : nh_(nh) {
           std::chrono::milliseconds(500), true);
   action_server_->activate();
 
-  // Configuration trap, found by profiling the P2 build (2026-09-12):
+  // Configuration trap, found by profiling (2026-09-12):
   // map_range evicts the cells that a wider ingestion crop re-creates from
   // the very next cloud.  At map_range 30 with the crop disabled that is
   // ~100 k cells created and thrown away per eviction cycle, which put 48 %
@@ -389,7 +393,7 @@ Planner::Planner(rclcpp::Node::SharedPtr nh) : nh_(nh) {
   }
   if (map_range_ > 0.f) {
     RCLCPP_WARN(nh_->get_logger(),
-                "Map is bounded (P6): cells farther than map_range %.1f m "
+                "Map is bounded: cells farther than map_range %.1f m "
                 "(%d cells) from the robot are evicted, at most every %.1f s "
                 "or after %.1f m of travel. A goal outside the bound "
                 "degrades to the nearest reachable cell.",
@@ -851,7 +855,7 @@ bool Planner::plan(const geometry_msgs::msg::PoseStamped &start_in,
     }
   }
 
-  // Figure out the starting cell of the search.  No Graph here (P2): a Graph
+  // Figure out the starting cell of the search.  No Graph here: a Graph
   // caches the per-vertex total cost and would be stale by the time the
   // ad-hoc layer below is rewritten, so the bounds check is the free
   // function.
@@ -937,7 +941,7 @@ bool Planner::plan(const geometry_msgs::msg::PoseStamped &start_in,
   const CellId v_goal = grid_.find_cell(grid_.point_to_cell({p1.x(), p1.y()}));
   const bool is_goal_explored = v_goal != INVALID_CELL_ID;
 
-  // Run the search.  Reused across requests (P2): the predecessor, path-cost
+  // Run the search.  Reused across requests: the predecessor, path-cost
   // and f-value buffers keep their capacity, so a steady-state cycle
   // allocates nothing here.
   Timer t_search;
@@ -1161,7 +1165,7 @@ void Planner::compute_plan() {
     }
 
     // Current robot pose is the start; request_tf_timeout_ is the same
-    // budget the GetPlan path uses (P5), not upstream's hard-coded 0.1 s.
+    // budget the GetPlan path uses, not upstream's hard-coded 0.1 s.
     if (!nav2_util::getCurrentPose(start_pose, *tf_, map_frame_, robot_frame_,
                                    request_tf_timeout_)) {
       throw nav2_core::PlannerTFError("Unable to get start pose");
@@ -1355,7 +1359,7 @@ void Planner::planning_timer() {
   if (!plan_safe(req, res)) {
     return;
   }
-  // Move the path out instead of copying it into the publisher (P4); the
+  // Move the path out instead of copying it into the publisher; the
   // response is local to this callback and is not used afterwards.
   auto path = std::make_unique<nav_msgs::msg::Path>(std::move(res->plan));
   const size_t num_poses = path->poses.size();
@@ -1379,7 +1383,7 @@ void Planner::receive_cloud(
 
   Timer t_tf;
   geometry_msgs::msg::TransformStamped cloud_to_map;
-  // Short timeout on purpose (P5): this runs on the only executor thread.
+  // Short timeout on purpose: this runs on the only executor thread.
   cloud_to_map = tf_->lookupTransform(
       map_frame_, input->header.frame_id, input->header.stamp,
       rclcpp::Duration::from_seconds(cloud_tf_timeout_));
@@ -1390,7 +1394,7 @@ void Planner::receive_cloud(
 
   // Sizes of which_cloud_, cloud_weights_, cloud_levels_, min_cloud_values_
   // and inflation_radius_ are checked against cost_fields_ in the
-  // constructor (B15).
+  // constructor.
   std::vector<int> levels;
   std::vector<float> weights;
   std::vector<double> min_values;
@@ -1411,7 +1415,7 @@ void Planner::receive_cloud(
   // Sensor origin in the map frame: the centre of the input_range crop and,
   // below, of the map_range eviction.  It is the sensor pose rather than the
   // robot pose, which is what the crop should be relative to anyway and
-  // costs no extra TF lookup (P6).
+  // costs no extra TF lookup.
   const auto &t = cloud_to_map.transform.translation;
   const Point2f origin(static_cast<float>(t.x), static_cast<float>(t.y));
 
@@ -1419,7 +1423,7 @@ void Planner::receive_cloud(
   const size_t num_pts = num_points(*input);
   if (grid_.empty()) {
     // First cloud: almost every point becomes a cell, and it is the only
-    // time the hash map rehashes from nothing to its final size (P10).
+    // time the hash map rehashes from nothing to its final size.
     // Later clouds add few cells, so no per-cloud reservation is made.
     grid_.reserve(num_pts);
   }
@@ -1436,7 +1440,7 @@ void Planner::receive_cloud(
   for (size_t pt = 0; pt < num_pts; ++pt, ++x_it) {
     // Non-finite input must be rejected before the cast in point_to_cell()
     // (undefined behaviour, phantom cells), and the crop keeps the per-cloud
-    // work bounded by input_range instead of by the size of the cloud (P6a).
+    // work bounded by input_range instead of by the size of the cloud.
     const Vec3 raw(x_it[0], x_it[1], x_it[2]);
     bool keep = is_valid(raw);
     Point2f p(0.f, 0.f);
@@ -1514,8 +1518,8 @@ void Planner::receive_cloud(
 
   if (publish_occupancy_grid_) {
     // Centred on the robot, not on the sensor.  The lookup runs in the
-    // cloud callback, so it uses the short cloud_tf_timeout_ (P5) and the
-    // latest available transform (B11) rather than blocking the only
+    // cloud callback, so it uses the short cloud_tf_timeout_ and the
+    // latest available transform rather than blocking the only
     // executor thread for a request-path timeout.
     geometry_msgs::msg::PoseStamped robot_pose;
     const auto robot_to_map =
@@ -1581,7 +1585,7 @@ void Planner::receive_cloud_safe(
     receive_cloud(input, cloud_index);
   } catch (const tf2::TransformException &ex) {
     // Expected whenever TF is late: the frame is dropped rather than waited
-    // for (P5).  Throttled so a persistent TF outage stays visible without
+    // for.  Throttled so a persistent TF outage stays visible without
     // flooding the log at the cloud rate.
     RCLCPP_WARN_THROTTLE(nh_->get_logger(), *nh_->get_clock(),
                          kTfDropWarnThrottleMs,
@@ -1680,7 +1684,7 @@ void Planner::check_input_parameters(int num_input_clouds) {
          << " is out of range [0, " << Costs::kSize << ").";
       throw std::runtime_error(ss.str());
     }
-    // P3: clear_ad_hoc_layer() restores only the cells the last apply touched,
+    // clear_ad_hoc_layer() restores only the cells the last apply touched,
     // which is equivalent to a full sweep only if no other writer touches
     // that layer.
     if (!adhoc_costs_.empty() &&

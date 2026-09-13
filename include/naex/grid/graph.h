@@ -17,14 +17,16 @@ typedef CellId EdgeId;
 typedef ValueIterator<VertexId> VertexIter;
 typedef ValueIterator<EdgeId> EdgeIter;
 
-/// Sentinel for "no vertex".  Distinct from naex::INVALID_VERTEX, which is a
-/// signed Index and compares badly against the unsigned VertexId.
+/**
+ * Sentinel for "no vertex".  Distinct from naex::INVALID_VERTEX, which is a
+ * signed Index and compares badly against the unsigned VertexId.
+ */
 inline constexpr VertexId INVALID_VERTEX_ID =
     std::numeric_limits<VertexId>::max();
 
 /**
  * Boost.Graph adapter over a Grid, with the neighbourhood fixed at compile
- * time (P2).
+ * time.
  *
  * @tparam N 4 or 8.  A compile-time N turns the per-edge `e / N` and `e % N`
  * of the Dijkstra inner loop into a shift and a mask, and drops the
@@ -37,7 +39,7 @@ inline constexpr VertexId INVALID_VERTEX_ID =
  * inner loop does no hash lookup at all; the per-vertex total cost (INF for a
  * cell that is out of bounds) is cached here, so it does not recompute
  * Costs::total() either.  The cache is built once in the constructor and is
- * therefore only valid while the grid's costs do not change — construct the
+ * therefore only valid while the grid's costs do not change -- construct the
  * graph after the ad-hoc layer has been written, never before.
  *
  * https://www.boost.org/doc/libs/1_75_0/libs/graph/doc/adjacency_list.html
@@ -90,8 +92,10 @@ public:
   inline VertexId source(const EdgeId &e) const { return e / N; }
   inline VertexId target_index(const EdgeId &e) const { return e % N; }
 
-  /// Index into Grid's 8-slot neighbour row for direction @p i of this
-  /// neighbourhood: neighbor8(c, 2 * i) == neighbor4(c, i).
+  /**
+   * Index into Grid's 8-slot neighbour row for direction @p i of this
+   * neighbourhood: neighbor8(c, 2 * i) == neighbor4(c, i).
+   */
   static inline int dir_index(const VertexId i) {
     return static_cast<int>(N == 8 ? i : 2 * i);
   }

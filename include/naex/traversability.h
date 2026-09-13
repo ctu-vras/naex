@@ -8,7 +8,7 @@
 namespace naex {
 
 /**
- * @brief Traversability estimation.
+ * Traversability estimation.
  *
  * @param input Input point cloud.
  * @param transform Transform to fixed frame.

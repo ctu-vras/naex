@@ -29,8 +29,10 @@ inline Point2f to_point2f(const geometry_msgs::msg::Point &p) {
 
 class MulePlanner {
 public:
-  /// Depth of this node's publisher queues (replanned path, debug grid).
-  /// Class-scope so that it cannot collide with the grid planner's own.
+  /**
+   * Depth of this node's publisher queues (replanned path, debug grid).
+   * Class-scope so that it cannot collide with the grid planner's own.
+   */
   static constexpr size_t kPublisherQueueDepth = 2;
 
   MulePlanner(rclcpp::Node::SharedPtr nh) : nh_(nh) {
@@ -50,7 +52,7 @@ public:
     max_start_to_traversable_dist_ = nh_->declare_parameter<float>(
         "max_start_to_traversable_dist", max_start_to_traversable_dist_);
     // Mirrors obstacle_cost_threshold_ in the struct the search takes.
-    // Costs' ctor is explicit (B1), hence no braced initializer here.
+    // Costs' ctor is explicit, hence no braced initializer here.
     max_costs_ = Costs(obstacle_cost_threshold_);
 
     neighborhood_ = nh_->declare_parameter<int>("neighborhood", neighborhood_);
@@ -101,7 +103,7 @@ public:
     for (size_t i = 0; i < num_pts; ++i, ++x_it, ++cost_iter) {
       const Point2f p(x_it[0], x_it[1]);
       // A non-finite or out-of-int16 position is undefined behaviour in the
-      // cast inside point_to_cell() and creates phantom cells (P6).
+      // cast inside point_to_cell() and creates phantom cells.
       if (std::isfinite(cost_iter[0]) && in_cell_range(grid_, p)) {
         grid_.update_point_cost(p, 0, cost_iter[0]);
       }
@@ -216,7 +218,7 @@ public:
         current_path.poses.back().pose.position;
     Vec3 p1 = to_vec3(last_path_point);
 
-    // Reused across clouds (P2): the search buffers keep their capacity.
+    // Reused across clouds: the search buffers keep their capacity.
     ShortestPaths &astar = shortest_paths_;
     astar.compute_astar(nh_->get_logger(), grid_, v0, p1, false,
                         astar_max_range_, static_cast<uint8_t>(neighborhood_),
@@ -280,7 +282,7 @@ public:
 
   void create_and_publish_map_cloud(const ShortestPaths &sp,
                                     const std::string &frame_id) {
-    // rviz-only topic; skip building 24 B per cell when nobody listens (P4).
+    // rviz-only topic; skip building 24 B per cell when nobody listens.
     if (map_pub_->get_subscription_count() == 0) {
       return;
     }
@@ -432,7 +434,7 @@ private:
 
   nav_msgs::msg::Path path_;
   Grid grid_{};
-  /// Reused A* buffers (P2); see cloud_cb().
+  /// Reused A* buffers; see cloud_cb().
   ShortestPaths shortest_paths_;
 
   std::mutex mutex_;

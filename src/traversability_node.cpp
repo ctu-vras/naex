@@ -15,7 +15,7 @@
 namespace naex {
 
 /**
- * @brief Traversability estimation node.
+ * Traversability estimation node.
  *
  * Subscribes to input point clouds, estimates traversability, and publishes
  * the annotated clouds.

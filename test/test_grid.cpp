@@ -223,15 +223,17 @@ TEST(ShortestPaths, AllBlockedIsUnreachable) {
 }
 
 // --- Regression guards for the performance work ---------------------------
-// The tests below pin behaviour that P2, P3, P8 and P9 must preserve.  They
+// The tests below pin behaviour the optimisations must preserve.  They
 // are deliberately written against exact cell sets and exact path costs, not
 // against timings.
 
 namespace {
 
-/// Dense square grid of cells [0, n) x [0, n) with all-zero costs on every
-/// layer (Costs(0.f) alone would leave layers 1..3 NaN), created in x-major
-/// order so that CellIds (and therefore tie-breaking) are stable.
+/**
+ * Dense square grid of cells [0, n) x [0, n) with all-zero costs on every
+ * layer (Costs(0.f) alone would leave layers 1..3 NaN), created in x-major
+ * order so that CellIds (and therefore tie-breaking) are stable.
+ */
 Grid make_dense_grid(int16_t n, float cell_size = 1.f) {
   Grid grid(cell_size, 1.f, Costs(0.f, 0.f, 0.f, 0.f));
   for (int16_t x = 0; x < n; ++x) {
@@ -310,9 +312,9 @@ TEST(SidelobeDisc, ProductionSizedLobeHitsTwelveCells) {
 
 namespace {
 
-// Reference implementation of apply_disc_cost(): the full-grid pass P3
-// replaced.  Kept verbatim so the bounding-box walk can be compared against it
-// cell by cell on random grids.
+// Reference implementation of apply_disc_cost(): the full-grid pass the
+// bounding-box walk replaced.  Kept verbatim so the walk can be compared
+// against it cell by cell on random grids.
 void reference_apply_disc_cost(Grid &grid, int layer, const Point2f &center,
                                float radius, Cost cost,
                                std::vector<naex::grid::CellId> *touched) {
@@ -697,13 +699,15 @@ TEST(Planning, NearestReachableCellWithUnreachableGoal) {
   EXPECT_EQ(unreachable, naex::grid::INVALID_CELL_ID);
 }
 
-// --- P6: input guards and the map bound ------------------------------------
+// --- Input guards and the map bound ----------------------------------------
 
 namespace {
 
-/// The per-point acceptance of Planner::receive_cloud(), without ROS: insert
-/// every accepted point of @p points into @p grid on layer 0.  Mirrors the
-/// loop in planner.h, so it pins the ingestion contract rather than the helper.
+/**
+ * The per-point acceptance of Planner::receive_cloud(), without ROS: insert
+ * every accepted point of @p points into @p grid on layer 0.  Mirrors the
+ * loop in planner.h, so it pins the ingestion contract rather than the helper.
+ */
 size_t ingest_points(Grid &grid, const std::vector<Point2f> &points,
                      const Point2f &origin, float input_range) {
   size_t skipped = 0;
@@ -721,7 +725,7 @@ size_t ingest_points(Grid &grid, const std::vector<Point2f> &points,
 
 TEST(InputGuard, NonFinitePointsCreateNoCell) {
   // Casting NaN/Inf to int16_t is undefined behaviour and used to create a
-  // phantom cell wherever the conversion happened to land (B8).
+  // phantom cell wherever the conversion happened to land.
   const float kInf = std::numeric_limits<float>::infinity();
   Grid grid(0.4f, 1.f, Costs(0.f, 0.f, 0.f, 0.f));
   const std::vector<Point2f> bad = {Point2f(kNaN, 0.f),  Point2f(0.f, kNaN),
@@ -855,7 +859,7 @@ TEST(Eviction, EvictOutsideKeepsExactlyTheSquare) {
   EXPECT_EQ(got, expected);
 
   // The mapping describes exactly what happened, for everything that caches a
-  // CellId (P2's neighbour table).
+  // CellId (the neighbour table).
   naex::grid::CellId last = 0;
   bool first = true;
   for (naex::grid::CellId v = 0; v < ev.before; ++v) {
@@ -916,7 +920,7 @@ TEST(Eviction, RadiusZeroAndRadiusLargerThanTheGrid) {
 
 TEST(Eviction, MapRangeZeroIsANoOp) {
   // The planner's gate: map_range <= 0 or NaN must leave the grid completely
-  // alone, i.e. reproduce the pre-P6 unbounded map.
+  // alone, i.e. reproduce the old unbounded map.
   for (const float range : {0.f, -10.f, kNaN}) {
     Grid grid = make_dense_grid(20, 0.4f);
     const uint64_t version_before = grid.version();
@@ -1057,25 +1061,29 @@ TEST(Grid, VersionBumpsOnStructuralChangesOnly) {
   EXPECT_GT(grid.version(), v2);
 }
 
-// --- P2: the flat neighbour table ------------------------------------------
+// --- The flat neighbour table ----------------------------------------------
 // The table replaces the per-edge hash lookups of the Dijkstra inner loop, so
 // a stale or mis-wired entry produces a plausible but wrong path.  The tests
 // below check it against the hash lookup it replaced, on every path that can
 // change a CellId (create_cell, clear, erase_cells), and check the search
-// itself against a verbatim copy of the pre-P2 hash-based graph.
+// itself against a verbatim copy of the old hash-based graph.
 
 namespace {
 
-/// Brute-force recomputation of one neighbour row: exactly the lookup
-/// Graph::target() used to do per examined edge.
+/**
+ * Brute-force recomputation of one neighbour row: exactly the lookup
+ * Graph::target() used to do per examined edge.
+ */
 naex::grid::CellId reference_neighbor(const Grid &grid, naex::grid::CellId v,
                                       int i) {
   const Cell n = naex::grid::neighbor8(grid.cell(v), i);
   return grid.has_cell(n) ? grid.cell_id(n) : naex::grid::INVALID_CELL_ID;
 }
 
-/// Every entry of the table equals the hash lookup, and every present entry is
-/// symmetric: if b is neighbour i of a then a is neighbour (i + 4) % 8 of b.
+/**
+ * Every entry of the table equals the hash lookup, and every present entry is
+ * symmetric: if b is neighbour i of a then a is neighbour (i + 4) % 8 of b.
+ */
 void expect_neighbor_table_consistent(const Grid &grid) {
   for (naex::grid::CellId v = 0; v < grid.size(); ++v) {
     for (int i = 0; i < 8; ++i) {
@@ -1092,8 +1100,10 @@ void expect_neighbor_table_consistent(const Grid &grid) {
   }
 }
 
-/// A grid of `count` cells drawn from a `side` x `side` area in a shuffled,
-/// seeded order, so that neighbours are created before *and* after each other.
+/**
+ * A grid of `count` cells drawn from a `side` x `side` area in a shuffled,
+ * seeded order, so that neighbours are created before *and* after each other.
+ */
 Grid make_shuffled_grid(int16_t side, size_t count, unsigned seed) {
   std::vector<Cell> cells;
   for (int16_t x = 0; x < side; ++x) {
@@ -1219,8 +1229,8 @@ TEST(Grid, NeighborTableAfterEvictionKeepsEveryLink) {
   EXPECT_EQ(links, static_cast<size_t>(2 * 2 * 7 * 6 + 2 * 2 * 6 * 6));
 }
 
-// The pre-P2 graph, kept verbatim so the searches can be compared edge for
-// edge: target() by two hash lookups with the self-edge fallback, cost() by
+// The old hash-based graph, kept verbatim so the searches can be compared edge
+// for edge: target() by two hash lookups with the self-edge fallback, cost() by
 // recomputing Costs::total() and the bounds check on both endpoints.
 namespace ref {
 
@@ -1339,7 +1349,7 @@ public:
 
 namespace ref {
 
-/// The pre-P2 ShortestPaths: fresh buffers, hash-based graph.
+/// The old ShortestPaths: fresh buffers, hash-based graph.
 struct RefShortestPaths {
   RefShortestPaths(const Grid &grid, VertexId start, uint8_t neighborhood,
                    const Costs &max_costs)
@@ -1427,8 +1437,8 @@ TEST(ShortestPaths, MatchesThePreP2HashGraphAfterEviction) {
 
 TEST(Graph, TargetFallsBackToSourceAtTheBorder) {
   // A single isolated cell has no neighbour at all: target() still reports the
-  // source, and the edge is inert because its cost is INF (pre-P2 it was a
-  // finite self-edge, which Dijkstra could not relax either).
+  // source, and the edge is inert because its cost is INF (before the table it
+  // was a finite self-edge, which Dijkstra could not relax either).
   Grid grid(1.f, 1.f, Costs(0.f, 0.f, 0.f, 0.f));
   const VertexId v = grid.cell_id(Cell(4, 4));
   const Graph graph(grid, Costs());
@@ -1482,7 +1492,7 @@ TEST(Planning, NeighborhoodFourMatchesEight) {
 }
 
 TEST(Grid, ReserveDoesNotChangeContent) {
-  // P10: reserve() only grows capacity; the table and the ids stay put.
+  // reserve() only grows capacity; the table and the ids stay put.
   Grid grid = make_shuffled_grid(10, 60, 3u);
   const size_t n = grid.size();
   const std::vector<naex::grid::CellId> before = [&] {
@@ -1507,7 +1517,7 @@ TEST(Grid, ReserveDoesNotChangeContent) {
 }
 
 TEST(Grid, CellHashIsPerfect) {
-  // P10: the packed hash must be injective over the int16 pair domain.
+  // The packed hash must be injective over the int16 pair domain.
   const naex::grid::CellHasher hash;
   std::set<std::size_t> seen;
   const int16_t values[] = {-32768, -32767, -1, 0, 1, 32766, 32767};
@@ -1627,7 +1637,7 @@ TEST(AStar, RangeCropBoundsTheExpansion) {
 }
 
 TEST(AStar, ReusesItsBuffersAcrossRuns) {
-  // The buffers are members (P2); a second run must not see the first one's
+  // The buffers are members; a second run must not see the first one's
   // state, whichever search ran before.
   Grid grid = make_dense_grid(10);
   const Costs max_costs(1.f);

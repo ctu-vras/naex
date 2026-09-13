@@ -29,7 +29,7 @@ def generate_launch_description():
                         "robot_frame": "odin1_base_link",
                         "max_cloud_age": 5.0,
                         # Cloud callbacks must never park the single-threaded
-                        # executor on TF (P5), but the timeout still has to
+                        # executor on TF, but the timeout still has to
                         # cover one TF period: every drop seen in bag replay
                         # was an "extrapolation into the future" by 1-6 ms
                         # against a 10 Hz TF, i.e. a transform that was there
@@ -43,11 +43,11 @@ def generate_launch_description():
                         # True subscribes to the input clouds with best-effort
                         # (sensor data) QoS; the default is reliable.
                         "sensor_data_qos": False,
-                        # Crop of the input cloud around the sensor (P6a).
+                        # Crop of the input cloud around the sensor.
                         # Bounds the per-cloud work; it does not bound the map,
                         # because cells are never removed by it.
                         "input_range": 5.0,
-                        # Bound of the map itself (P6b): cells farther than
+                        # Bound of the map itself: cells farther than
                         # map_range from the robot are dropped.  0 keeps the
                         # historical behaviour, an unbounded map that grows for
                         # the whole mission (215 k cells and 0.9 s of Dijkstra

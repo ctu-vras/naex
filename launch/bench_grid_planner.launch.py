@@ -6,13 +6,13 @@ Nothing here needs a display.  The benchmark node prints a single
 ``BENCH_RESULT {...}`` JSON line when it is done and, if ``output`` is set,
 writes the same JSON to that file.
 
-P5 acceptance run (TF outage halfway through, with the planning timer on so
+TF-outage acceptance run (TF outage halfway through, with the planning timer on so
 that ``path`` messages exist)::
 
     ros2 launch naex bench_grid_planner.launch.py \\
         field_size:=200.0 planning_freq:=1.0 tf_gap:=2.0
 
-P6 acceptance run (the grid grows for 30 s; map_range caps it, input_range
+Map-bound acceptance run (the grid grows for 30 s; map_range caps it, input_range
 caps the per-cloud work).  ``input_range`` defaults to ``map_range``, so the
 run below crops the input to 30 m as well; pass ``input_range:=0.0``
 explicitly to reproduce the uncropped (and much more expensive) pre-2026-09-12
@@ -69,7 +69,7 @@ _ARGS = {
     "duration": "30.0",
     "warmup": "3.0",
     "subscribe_map": "true",
-    # P5 acceptance: stop broadcasting map -> base_link for tf_gap seconds,
+    # TF-outage acceptance: stop broadcasting map -> base_link for tf_gap seconds,
     # starting at tf_gap_at of the run.  Needs planning_freq > 0, otherwise no
     # path message is published and the executor stall is invisible.
     "tf_gap": "0.0",
@@ -85,8 +85,8 @@ _ARGS = {
     # is guided by the accumulated cost only.
     "use_astar": "false",
     "astar_max_range": "50.0",
-    # P6.  map_range bounds the grid itself and defaults to 0 (disabled), so
-    # every configuration recorded before P6 reproduces.  input_range crops the
+    # Map bound.  map_range bounds the grid itself and defaults to 0 (disabled), so
+    # every configuration recorded before the bound reproduces.  input_range crops the
     # cloud around the sensor and *defaults to map_range* (see the
     # DeclareLaunchArgument below): 0 while the map is unbounded, so the
     # 200 m static run is unchanged, but 30 m in the documented

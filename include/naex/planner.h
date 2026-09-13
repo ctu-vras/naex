@@ -19,7 +19,7 @@
 namespace naex {
 
 /**
- * @brief Global planner on an incrementally built point map.
+ * Global planner on an incrementally built point map.
  *
  * The map (@ref Map) is merged from input clouds, labelled for traversability
  * and searched with Dijkstra over the k-NN graph. With a valid goal in the

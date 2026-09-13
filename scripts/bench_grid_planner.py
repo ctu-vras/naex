@@ -26,7 +26,7 @@ obstacle_size     Edge length of one obstacle patch, in metres.
 seed              RNG seed; the same seed gives the same field every run.
 cloud_rate        Cloud publishing rate, in Hz.
 grow              If true, the field grows linearly from ``grow_start_size``
-                  to ``field_size`` over ``duration`` (emulates P6's unbounded
+                  to ``field_size`` over ``duration`` (emulates an unbounded
                   grid growth).
 grow_start_size   Initial edge length in growth mode, in metres.
 request_rate      Upper bound on the get_plan request rate, in Hz.  Requests
@@ -39,11 +39,11 @@ robot_frame       Frame the cloud is published in and the robot sits in.
 robot_x, robot_y  Robot position in the map frame.
 goal_x, goal_y    Goal position in the map frame.
 subscribe_map     If true, subscribe to the planner's rviz-only ``map`` cloud
-                  so that its publish cost (P4) is actually paid.  Set false to
+                  so that its publish cost is actually paid.  Set false to
                   measure the planner with no map consumer attached.
 tf_gap            If > 0, stop broadcasting ``map -> robot_frame`` for that many
-                  seconds, starting at ``tf_gap_at`` of the run (P5 acceptance
-                  test).  The report then carries the worst gap between
+                  seconds, starting at ``tf_gap_at`` of the run (TF-outage
+                  acceptance test).  The report then carries the worst gap between
                   consecutive ``path`` messages and the client latency observed
                   inside the window.
 tf_gap_at         Fraction of ``duration`` at which the TF outage starts.
@@ -282,7 +282,7 @@ class BenchGridPlanner(Node):
 
     def publish_tf(self):
         if self.in_tf_gap():
-            # P5 acceptance: the planner must drop clouds it cannot transform
+            # TF-outage acceptance: the planner must drop clouds it cannot transform
             # instead of parking the single-threaded executor on the lookup.
             return
         t = TransformStamped()
@@ -333,7 +333,7 @@ class BenchGridPlanner(Node):
                 self.cloud_lines.append(entry)
         elif text.startswith("perf evict:"):
             # "perf evict: map_range=... center=(...) cells_before=N
-            #  cells_after=M removed=K"; P6 logs one line per eviction that
+            #  cells_after=M removed=K"; the planner logs one line per eviction that
             # actually removed something.
             entry = self._parse_kv(text[len("perf evict:") :])
             if entry:
@@ -480,8 +480,8 @@ class BenchGridPlanner(Node):
         perf = self.perf_lines[1:] if len(self.perf_lines) > 1 else self.perf_lines
         perf_mean, perf_min, perf_median, perf_max = self._stats(perf, perf_keys)
 
-        # skipped/evict are P6: points rejected by input_range or the validity
-        # guard, and the time the (amortised) map_range compaction took.
+        # skipped/evict come from the map bound: points rejected by input_range or
+        # the validity guard, and the time the (amortised) map_range compaction took.
         cloud_keys = ("pts", "skipped", "tf", "points", "evict", "cells")
         cloud = self.cloud_lines[1:] if len(self.cloud_lines) > 1 else self.cloud_lines
         cloud_mean, cloud_min, cloud_median, cloud_max = self._stats(cloud, cloud_keys)

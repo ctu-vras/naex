@@ -49,11 +49,8 @@ Value inline inclination(const Vec3 &x) {
 
 /**
  * Plane from three points (in non-degenerate configuration).
- * @tparam Derived
- * @param p0
- * @param p1
- * @param p2
- * @return
+ * @return Plane (n, d) with unit normal n = (p1 - p0) x (p2 - p0) and
+ *         n . x + d = 0.
  */
 template <typename Derived>
 inline Vec4 plane_from_points(const Eigen::MatrixBase<Derived> &p0,

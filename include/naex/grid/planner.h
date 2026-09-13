@@ -54,8 +54,10 @@ inline constexpr int8_t kOccupancyUnknown = -1;
 inline constexpr int8_t kOccupancyFree = 0;
 /// Cell whose costs are out of bounds; see kOccupancyUnknown.
 inline constexpr int8_t kOccupancyBlocked = 127;
-/// Return of Planner::point_to_occupancy_grid_cell() for a point outside the
-/// published grid.
+/**
+ * Return of Planner::point_to_occupancy_grid_cell() for a point outside the
+ * published grid.
+ */
 inline constexpr int kOutsideOccupancyGrid = -1;
 
 /**
@@ -64,32 +66,40 @@ inline constexpr int kOutsideOccupancyGrid = -1;
  */
 inline constexpr size_t kPublisherQueueDepth = 2;
 
-/// Throttle period (ms) of the once-per-cycle "perf" lines; planning_freq may
-/// be higher than 1 Hz.
+/**
+ * Throttle period (ms) of the once-per-cycle "perf" lines; planning_freq may
+ * be higher than 1 Hz.
+ */
 inline constexpr int kPerfLogThrottleMs = 1000;
-/// Throttle period (ms) of the request-frame mismatch warnings, which repeat
-/// at the request rate.
+/**
+ * Throttle period (ms) of the request-frame mismatch warnings, which repeat
+ * at the request rate.
+ */
 inline constexpr int kFrameWarnThrottleMs = 1000;
-/// Throttle period (ms) of the dropped-cloud warning, which would otherwise
-/// repeat at the cloud rate for the whole TF outage.
+/**
+ * Throttle period (ms) of the dropped-cloud warning, which would otherwise
+ * repeat at the cloud rate for the whole TF outage.
+ */
 inline constexpr int kTfDropWarnThrottleMs = 2000;
 /// Throttle period (ms) of the "robot is not a valid cell" eviction warning.
 inline constexpr int kEvictWarnThrottleMs = 5000;
 
 /**
- * @brief Per-cycle timing breakdown of Planner::plan().
+ * Per-cycle timing breakdown of Planner::plan().
  *
  * Filled by plan() and logged once per planning cycle by
  * Planner::log_plan_summary().  Purely observational: no field is read back by
  * the planner itself.
  */
 struct PlanTimings {
-  /// Cells in the grid at the end of the cycle (P6 growth monitor).
+  /// Cells in the grid at the end of the cycle (growth monitor).
   size_t grid_size{0};
-  /// TF on the get_plan path: the start/goal frame transforms, the robot
-  /// pose lookup (only when the request has no start) and the robot-frame
-  /// check of the ad-hoc layer.  Logged as tf= and bounded by
-  /// request_tf_timeout per lookup.
+  /**
+   * TF on the get_plan path: the start/goal frame transforms, the robot
+   * pose lookup (only when the request has no start) and the robot-frame
+   * check of the ad-hoc layer.  Logged as tf= and bounded by
+   * request_tf_timeout per lookup.
+   */
   double start_tf{0.0};
   /// Ad-hoc (sidelobes) cost clear + apply.
   double adhoc{0.0};
@@ -108,7 +118,7 @@ struct PlanTimings {
 };
 
 /**
- * @brief Global planner on a 2-D grid.
+ * Global planner on a 2-D grid.
  *
  * Each input cloud writes its own cost layer (up to Costs::kSize of them), so
  * several traversability sources -- e.g. geometric and semantic -- can be
@@ -138,7 +148,7 @@ public:
    * their own; the component that gets nearest to the goal wins, and inside it
    * the cell with the lowest A* f value is returned.
    *
-   * The neighbour count comes from Grid's flat neighbour table (P2) instead of
+   * The neighbour count comes from Grid's flat neighbour table instead of
    * an out_edge walk over a boost::filtered_graph; the set of counted edges is
    * the same (an absent neighbour was the self-edge the old loop skipped) and
    * the range predicate is the one the A* filter used.
@@ -150,12 +160,14 @@ public:
   /**
    * Nearest cell to @p p0 whose costs are in bounds, and its distance.
    *
-   * The O(N) scan only runs when the robot cell is blocked or unexplored (P9).
+   * The O(N) scan only runs when the robot cell is blocked or unexplored.
    */
   std::pair<float, VertexId> get_nearest_traversable_vertex(const Vec3 &p0);
 
-  /// Fall-back plan when the start is nowhere near anything traversable.
-  /// Always exactly two poses (start, goal), regardless of append_goal_pose_.
+  /**
+   * Fall-back plan when the start is nowhere near anything traversable.
+   * Always exactly two poses (start, goal), regardless of append_goal_pose_.
+   */
   nav_msgs::msg::Path
   return_straight_line_plan(const geometry_msgs::msg::PoseStamped &start,
                             const geometry_msgs::msg::PoseStamped &goal);
@@ -188,8 +200,10 @@ public:
             const geometry_msgs::msg::PoseStamped &goal,
             nav_msgs::msg::Path &path);
 
-  /// GetPlan request wrapper around plan(): remembers @p req in
-  /// last_request_ so planning_timer() can repeat it, then delegates.
+  /**
+   * GetPlan request wrapper around plan(): remembers @p req in
+   * last_request_ so planning_timer() can repeat it, then delegates.
+   */
   bool plan_from_request(nav_msgs::srv::GetPlan::Request::SharedPtr req,
                         nav_msgs::srv::GetPlan::Response::SharedPtr res);
 
@@ -197,7 +211,7 @@ public:
    * Publish the rviz-only "map" cloud, if anybody is listening.
    *
    * Building it costs 20 B per cell (4.3 MB at 216 k cells) every cycle, so it
-   * is skipped when the topic has no subscriber (P4).  Consequence: a late
+   * is skipped when the topic has no subscriber.  Consequence: a late
    * joining subscriber (rviz, or a `ros2 bag record` started after the fact)
    * misses the cycles before it connected.
    */
@@ -237,17 +251,21 @@ public:
    * section.
    *
    * map_range is the configured bound (0 = unbounded), repeated on every line
-   * so that a bag says which regime "cells" was measured in (P6).
+   * so that a bag says which regime "cells" was measured in.
    */
   void log_plan_summary() const;
 
-  /// Service/timer entry point: holds mtx_ for the whole call (see mtx_),
-  /// then delegates to plan_from_request().
+  /**
+   * Service/timer entry point: holds mtx_ for the whole call (see mtx_),
+   * then delegates to plan_from_request().
+   */
   bool plan_safe(nav_msgs::srv::GetPlan::Request::SharedPtr req,
                  nav_msgs::srv::GetPlan::Response::SharedPtr res);
 
-  /// Service callback.  nav_msgs/GetPlan has no success field, so a failed
-  /// plan is reported as a warning and an empty (but stamped) plan.
+  /**
+   * Service callback.  nav_msgs/GetPlan has no success field, so a failed
+   * plan is reported as a warning and an empty (but stamped) plan.
+   */
   void request_plan(nav_msgs::srv::GetPlan::Request::SharedPtr req,
                     nav_msgs::srv::GetPlan::Response::SharedPtr res);
 
@@ -262,7 +280,7 @@ public:
    * instead of a hard-coded 0.1 s, and the goal is transformed with
    * nav2_util::transformPoseInTargetFrame(..., request_tf_timeout_) instead
    * of a hard-coded 1.0 s -- both now share the same TF budget as the
-   * GetPlan path (P5). Does not touch last_request_: the action is a one-off
+   * GetPlan path. Does not touch last_request_: the action is a one-off
    * request, not the periodic re-planning source.
    */
   void compute_plan();
@@ -273,20 +291,26 @@ public:
                         const std::string &planner_id,
                         const std::exception &ex, std::string &error_msg);
 
-  /// Drop the whole grid; returns the cell count it held before the clear.
-  /// Shared by both service callbacks below; holds mtx_ for the whole call
-  /// (see mtx_) since it is their only entry point into grid_.
+  /**
+   * Drop the whole grid; returns the cell count it held before the clear.
+   * Shared by both service callbacks below; holds mtx_ for the whole call
+   * (see mtx_) since it is their only entry point into grid_.
+   */
   size_t clear_map_impl();
 
-  /// Service callback on clear_plan_map: nav2_msgs/ClearEntireCostmap, the
-  /// name and type upstream and the robots use. Its response carries nothing
-  /// back, unlike clear_map() below.
+  /**
+   * Service callback on clear_plan_map: nav2_msgs/ClearEntireCostmap, the
+   * name and type upstream and the robots use. Its response carries nothing
+   * back, unlike clear_map() below.
+   */
   void
   clear_map_costmap(nav2_msgs::srv::ClearEntireCostmap::Request::SharedPtr,
                     nav2_msgs::srv::ClearEntireCostmap::Response::SharedPtr);
 
-  /// Service callback on clear_plan_map_trigger: std_srvs/Trigger, so a
-  /// caller gets the cell count back in the response message.
+  /**
+   * Service callback on clear_plan_map_trigger: std_srvs/Trigger, so a
+   * caller gets the cell count back in the response message.
+   */
   void clear_map(std_srvs::srv::Trigger::Request::SharedPtr,
                  std_srvs::srv::Trigger::Response::SharedPtr res);
 
@@ -297,8 +321,8 @@ public:
    * ever writes adhoc_layer_: cells created since the last apply already carry
    * default_costs_[adhoc_layer_] (Grid::create_cell), and a cloud cost field
    * mapped onto the ad-hoc layer is rejected by check_input_parameters().
-   * Every operation that invalidates CellIds (clear_map(), the P6 eviction)
-   * must drop the dirty list.
+   * Every operation that invalidates CellIds (clear_map(), the map_range
+   * eviction) must drop the dirty list.
    */
   void clear_ad_hoc_layer();
 
@@ -313,7 +337,7 @@ public:
       int cloud_index);
 
   /**
-   * Drop the cells farther than map_range_ from @p robot, if it is time (P6b).
+   * Drop the cells farther than map_range_ from @p robot, if it is time.
    *
    * Called once per ingested cloud, but the O(N) compaction only runs when one
    * of three cheap triggers fires, so the amortised cost is negligible (a full
@@ -337,7 +361,7 @@ public:
    * Everything that caches a CellId must be invalidated here; see the
    * Eviction contract in grid.h.  Today that is only the ad-hoc dirty list,
    * which is restored *before* the compaction (its CellIds are still valid at
-   * that point) so that no cell keeps a stale sidelobe cost forever.  P2's
+   * that point) so that no cell keeps a stale sidelobe cost forever.  The
    * neighbour table is remapped by Grid::erase_cells() itself, so no caller can
    * forget it.
    *
@@ -345,9 +369,11 @@ public:
    */
   bool maybe_evict_cells(const Point2f &robot);
 
-  /// Cloud-ingestion entry point: holds mtx_ for the whole call to
-  /// receive_cloud() (grid writes, eviction and the occupancy-grid publish;
-  /// see mtx_), then handles the exceptions receive_cloud() may throw.
+  /**
+   * Cloud-ingestion entry point: holds mtx_ for the whole call to
+   * receive_cloud() (grid writes, eviction and the occupancy-grid publish;
+   * see mtx_), then handles the exceptions receive_cloud() may throw.
+   */
   void receive_cloud_safe(
       const std::shared_ptr<const sensor_msgs::msg::PointCloud2> &input,
       int cloud_index);
@@ -372,7 +398,7 @@ protected:
    *
    * A vector left empty is padded with a sensible default and a warning is
    * logged; a non-empty vector of the wrong size is a configuration error and
-   * throws std::runtime_error (B15).
+   * throws std::runtime_error.
    */
   void check_input_parameters(int num_input_clouds);
 
@@ -412,24 +438,32 @@ protected:
   float astar_max_range_{50.};
   /// m; frontier cells closer than this to the robot are ignored.
   float frontier_min_dist_{3.};
-  /// Max number of existing in-range neighbours a cell may have and still
-  /// count as a frontier.
+  /**
+   * Max number of existing in-range neighbours a cell may have and still
+   * count as a frontier.
+   */
   int frontier_max_neighbors_{5};
-  /// A cost-optimal route longer than this multiple of the crow-flies
-  /// distance makes the planner consider a frontier instead.
+  /**
+   * A cost-optimal route longer than this multiple of the crow-flies
+   * distance makes the planner consider a frontier instead.
+   */
   float max_relative_dist_to_goal_{2.0};
-  /// Weight of the euclidean distance to the goal in a frontier's score:
-  /// get_cheapest_frontier() scores a cell as path_cost(v) + (f_value(v) -
-  /// path_cost(v)) * frontier_dist_from_goal_cost_. 1.0 (the default)
-  /// reproduces f_value(v) exactly, i.e. unchanged behaviour; > 1.0 makes a
-  /// frontier further from the goal look more expensive than plain f_value
-  /// would.
+  /**
+   * Weight of the euclidean distance to the goal in a frontier's score:
+   * get_cheapest_frontier() scores a cell as path_cost(v) + (f_value(v) -
+   * path_cost(v)) * frontier_dist_from_goal_cost_. 1.0 (the default)
+   * reproduces f_value(v) exactly, i.e. unchanged behaviour; > 1.0 makes a
+   * frontier further from the goal look more expensive than plain f_value
+   * would.
+   */
   float frontier_dist_from_goal_cost_{1.0};
 
-  /// Goal snapping (see snap_goal_cell() in grid.h): a goal not on a cell
-  /// whose goal_snap_level_ cost is at most goal_snap_max_cost_ moves to the
-  /// nearest such cell within goal_snap_radius_ (m). 0 (the default)
-  /// disables it.
+  /**
+   * Goal snapping (see snap_goal_cell() in grid.h): a goal not on a cell
+   * whose goal_snap_level_ cost is at most goal_snap_max_cost_ moves to the
+   * nearest such cell within goal_snap_radius_ (m). 0 (the default)
+   * disables it.
+   */
   float goal_snap_radius_{0.0};
   int goal_snap_level_{0};
   float goal_snap_max_cost_{0.0};
@@ -437,16 +471,20 @@ protected:
   // Transforms and frames
   std::shared_ptr<tf2_ros::Buffer> tf_{};
   std::shared_ptr<tf2_ros::TransformListener> tf_sub_;
-  /// Timeout of every TF lookup on the get_plan/plan path; short on purpose,
-  /// see P5.  All of them are "latest available", so they can only wait when
-  /// TF is genuinely absent, and then failing fast beats parking the single
-  /// executor thread.
+  /**
+   * Timeout of every TF lookup on the get_plan/plan path; short on purpose.
+   * All of them are "latest available", so they can only wait when
+   * TF is genuinely absent, and then failing fast beats parking the single
+   * executor thread.
+   */
   float request_tf_timeout_{0.5};
-  /// Timeout of the per-cloud lookup in receive_cloud(); short on purpose, see
-  /// P5.  It has to cover one TF period (0.2 s = 2 periods of a 10 Hz TF), so
-  /// that a transform that is merely a few ms into the future does not drop
-  /// the frame, but still short enough that a TF dropout drops frames rather
-  /// than parking the single-threaded executor.
+  /**
+   * Timeout of the per-cloud lookup in receive_cloud(); short on purpose.
+   * It has to cover one TF period (0.2 s = 2 periods of a 10 Hz TF), so
+   * that a transform that is merely a few ms into the future does not drop
+   * the frame, but still short enough that a TF dropout drops frames rather
+   * than parking the single-threaded executor.
+   */
   float cloud_tf_timeout_{0.2};
   std::string map_frame_{"map"};
   std::string robot_frame_{"base_footprint"};
@@ -479,45 +517,59 @@ protected:
   std::vector<long int> which_cloud_;
   std::vector<double> cloud_weights_;
   std::vector<long int> cloud_levels_;
-  /// Per-cost-field threshold (parallel to cost_fields_, checked in
-  /// check_input_parameters()): a point's cost field j only *creates* a cell
-  /// when its value is > min_cloud_values_[j]; an already-existing cell is
-  /// still updated regardless. -inf (the default) never gates creation, so
-  /// the default ingestion path does no extra work.
+  /**
+   * Per-cost-field threshold (parallel to cost_fields_, checked in
+   * check_input_parameters()): a point's cost field j only *creates* a cell
+   * when its value is > min_cloud_values_[j]; an already-existing cell is
+   * still updated regardless. -inf (the default) never gates creation, so
+   * the default ingestion path does no extra work.
+   */
   std::vector<double> min_cloud_values_;
-  /// Per-cost-field obstacle inflation radius in meters (parallel to
-  /// cost_fields_): an above-threshold point also stamps its cost onto every
-  /// other cell within this radius (see inflate_disc_cost() in grid.h). 0.0
-  /// (the default) disables inflation for that layer.
+  /**
+   * Per-cost-field obstacle inflation radius in meters (parallel to
+   * cost_fields_): an above-threshold point also stamps its cost onto every
+   * other cell within this radius (see inflate_disc_cost() in grid.h). 0.0
+   * (the default) disables inflation for that layer.
+   */
   std::vector<double> inflation_radius_;
   float max_cloud_age_{5.0};
-  /// Radius (m) around the sensor outside which input points are discarded;
-  /// <= 0 or NaN disables the crop (P6a).  Bounds the per-cloud work, not the
-  /// grid: driving on keeps creating cells.
+  /**
+   * Radius (m) around the sensor outside which input points are discarded;
+   * <= 0 or NaN disables the crop.  Bounds the per-cloud work, not the
+   * grid: driving on keeps creating cells.
+   */
   float input_range_{10.0};
-  /// The crop receive_cloud() actually applies: input_range_, clamped to
-  /// map_range_ when the map is bounded and the crop would reach past it (see
-  /// the constructor).  Kept separate so the declared parameter still reports
-  /// what the operator set.
+  /**
+   * The crop receive_cloud() actually applies: input_range_, clamped to
+   * map_range_ when the map is bounded and the crop would reach past it (see
+   * the constructor).  Kept separate so the declared parameter still reports
+   * what the operator set.
+   */
   float effective_input_range_{10.0};
   bool sensor_data_qos_{false};
 
-  // Map bound (P6b).  Radius (m) around the robot outside which cells are
-  // evicted; 0 (the default) means the pre-P6 behaviour, an unbounded map.
+  // Map bound.  Radius (m) around the robot outside which cells are
+  // evicted; 0 (the default) means an unbounded map.
   // The bound is a square (Chebyshev in cells), so it caps the grid at
   // (2*ceil(map_range/cell_size) + 1)^2 cells.
   float map_range_{0.0};
-  /// Upper bound (s) on the interval between two evictions while the robot
-  /// stands still; <= 0 evicts once per ingested cloud.  Eviction also
-  /// triggers on movement and on growth, see kEvictMoveFraction /
-  /// kEvictSizeFactor.
+  /**
+   * Upper bound (s) on the interval between two evictions while the robot
+   * stands still; <= 0 evicts once per ingested cloud.  Eviction also
+   * triggers on movement and on growth, see kEvictMoveFraction /
+   * kEvictSizeFactor.
+   */
   float evict_period_{10.0};
-  /// Fraction of map_range_ the robot may travel between two evictions; it
-  /// bounds the overshoot of the cap to (1 + fraction) * map_range_.
+  /**
+   * Fraction of map_range_ the robot may travel between two evictions; it
+   * bounds the overshoot of the cap to (1 + fraction) * map_range_.
+   */
   static constexpr float kEvictMoveFraction = 0.25f;
-  /// How far the cell count may exceed what the bound retains before an
-  /// eviction is forced; this is what makes the cap on the grid size hold
-  /// however fast the map grows.
+  /**
+   * How far the cell count may exceed what the bound retains before an
+   * eviction is forced; this is what makes the cap on the grid size hold
+   * however fast the map grows.
+   */
   static constexpr double kEvictSizeFactor = 1.5;
   /// Centre and time of the last eviction; NaN/0 until the first one.
   Point2f last_evict_at_{};
@@ -532,11 +584,13 @@ protected:
   Costs max_costs_;
   /// Per-layer bounds relative to cloud_weights ('max_costs_relative').
   Costs max_costs_relative_;
-  /// What the search actually uses: max_costs_, with every finite
-  /// max_costs_relative_ entry overriding it as relative * cloud_weight.
+  /**
+   * What the search actually uses: max_costs_, with every finite
+   * max_costs_relative_ entry overriding it as relative * cloud_weight.
+   */
   Costs max_costs_absolute_;
   Costs default_costs_;
-  /// Reused search buffers (P2); see plan().  Holds no reference to the grid.
+  /// Reused search buffers; see plan().  Holds no reference to the grid.
   ShortestPaths shortest_paths_;
 
   // Planning
@@ -545,22 +599,28 @@ protected:
   bool start_on_request_{true};
   bool stop_on_goal_{true};
   float goal_reached_dist_{std::numeric_limits<float>::quiet_NaN()};
-  /// If the start is farther than this from the nearest traversable cell we
-  /// plan a straight line to the goal instead (this should only happen with
-  /// navigate-through-poses, where the start need not be the robot).
+  /**
+   * If the start is farther than this from the nearest traversable cell we
+   * plan a straight line to the goal instead (this should only happen with
+   * navigate-through-poses, where the start need not be the robot).
+   */
   float max_start_to_traversable_dist_{2.0};
-  /// If true (the default, unchanged helhest behaviour), the searched path
-  /// gets the requested goal pose appended as its last pose, so a downstream
-  /// goal checker sees the real goal even when the search itself stopped at
-  /// a frontier. husky/taros set this false. The straight-line fallback
-  /// (return_straight_line_plan()) always has exactly two poses regardless.
+  /**
+   * If true (the default, unchanged helhest behaviour), the searched path
+   * gets the requested goal pose appended as its last pose, so a downstream
+   * goal checker sees the real goal even when the search itself stopped at
+   * a frontier. husky/taros set this false. The straight-line fallback
+   * (return_straight_line_plan()) always has exactly two poses regardless.
+   */
   bool append_goal_pose_{true};
 
   // Ad-hoc costs
   std::vector<std::string> adhoc_costs_{};
   int adhoc_layer_{3};
-  /// Cells whose ad-hoc layer the last apply_ad_hoc_costs() wrote, so that
-  /// clear_ad_hoc_layer() restores those instead of sweeping the grid (P3).
+  /**
+   * Cells whose ad-hoc layer the last apply_ad_hoc_costs() wrote, so that
+   * clear_ad_hoc_layer() restores those instead of sweeping the grid.
+   */
   std::vector<CellId> adhoc_dirty_{};
 
   // Instrumentation (see PlanTimings); written by plan()/plan_safe() only.

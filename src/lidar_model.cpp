@@ -9,7 +9,7 @@
 namespace naex {
 
 /**
- * @brief Fits a spherical projection model to incoming point clouds.
+ * Fits a spherical projection model to incoming point clouds.
  */
 class LidarModel : public rclcpp::Node {
 public:

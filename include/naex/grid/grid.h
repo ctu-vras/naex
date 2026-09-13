@@ -49,7 +49,7 @@ template <typename T> struct Point2Hasher {
 };
 
 /**
- * Perfect hash for a Cell (P10): the two int16_t coordinates are packed into
+ * Perfect hash for a Cell: the two int16_t coordinates are packed into
  * the low 32 bits, so distinct cells never collide and the hash is two shifts
  * and an or instead of two std::hash calls plus hash_combine.
  *
@@ -74,8 +74,10 @@ struct Costs {
              std::numeric_limits<Cost>::quiet_NaN(),
              std::numeric_limits<Cost>::quiet_NaN(),
              std::numeric_limits<Cost>::quiet_NaN()} {}
-  /// Explicit so that a scalar (e.g. a vertex id) never silently converts to
-  /// Costs; see B1 in the 2026-09-12 review.
+  /**
+   * Explicit so that a scalar (e.g. a vertex id) never silently converts to
+   * Costs.
+   */
   explicit Costs(Cost c0, Cost c1 = std::numeric_limits<Cost>::quiet_NaN(),
                  Cost c2 = std::numeric_limits<Cost>::quiet_NaN(),
                  Cost c3 = std::numeric_limits<Cost>::quiet_NaN())
@@ -103,12 +105,14 @@ struct Costs {
   }
 };
 
-/// Sentinel returned by nearest_cell() and Grid::find_cell() when there is no
-/// such cell, and by Eviction::old_to_new for a cell that was removed.
+/**
+ * Sentinel returned by nearest_cell() and Grid::find_cell() when there is no
+ * such cell, and by Eviction::old_to_new for a cell that was removed.
+ */
 inline constexpr CellId INVALID_CELL_ID = std::numeric_limits<CellId>::max();
 
 /**
- * Number of neighbour slots per cell in the flat neighbour table (P2).
+ * Number of neighbour slots per cell in the flat neighbour table.
  *
  * Always 8, also for the 4-neighbourhood: neighbor8(c, 2 * i) == neighbor4(c,
  * i), so the 4-connected search reads only the even slots and one table serves
@@ -184,7 +188,7 @@ inline Cell neighbor8(const Cell &source, int i) {
 }
 
 /**
- * Length of the i-th 8-neighbour step in cells (P2).
+ * Length of the i-th 8-neighbour step in cells.
  *
  * std::sqrt is not constexpr before C++26, hence the literal; Graph.Distance8
  * pins that it rounds to the same float as std::sqrt(2.f).
@@ -202,7 +206,7 @@ inline Cost distance8(int i) {
  * Result of a Grid compaction (Grid::erase_cells(), Grid::evict_outside()).
  *
  * This is the contract every holder of a CellId must honour (the planner's
- * ad-hoc dirty list today, P2's neighbour table and P7's plan cache later):
+ * ad-hoc dirty list and the neighbour table today, a plan cache later):
  *
  * * `removed == 0`: nothing was dropped, no cell was renumbered, every CellId
  *   stays valid, `version` is unchanged and `old_to_new` is empty.  A cached
@@ -248,7 +252,7 @@ public:
    *
    * One hash insert plus the 8 lookups of the neighbour resolution; the reverse
    * links of the neighbours found are patched in place, so the table stays
-   * exact without ever being rebuilt (P2).
+   * exact without ever being rebuilt.
    */
   void create_cell(const Cell &c) {
     const auto res = cell_to_id_.try_emplace(c, static_cast<CellId>(size()));
@@ -268,7 +272,7 @@ public:
   /**
    * CellId of @p c, creating the cell if it does not exist.
    *
-   * One hash lookup on a hit and one insert on a miss (P10); the pre-P10
+   * One hash lookup on a hit and one insert on a miss; the previous
    * version cost two lookups on a hit and three on a miss.
    */
   CellId &cell_id(const Cell &c) {
@@ -282,8 +286,10 @@ public:
     assert(has_cell(c));
     return cell_to_id_.find(c)->second;
   }
-  /// CellId of @p c, or INVALID_CELL_ID if the cell does not exist.  One hash
-  /// lookup, and it never creates a cell (P3).
+  /**
+   * CellId of @p c, or INVALID_CELL_ID if the cell does not exist.  One hash
+   * lookup, and it never creates a cell.
+   */
   CellId find_cell(const Cell &c) const;
 
   Cell point_to_cell(const Point2f &p) const {
@@ -341,7 +347,7 @@ public:
 
   /**
    * Reserve room for @p n cells in every container, the neighbour table
-   * included (P10).
+   * included.
    *
    * Only grows; a smaller @p n is ignored.  Worth calling before a bulk insert
    * (the first cloud), where the rehashing of cell_to_id_ is otherwise the
@@ -359,7 +365,7 @@ public:
 
   /**
    * CellId of the i-th 8-neighbour of cell @p id, or INVALID_CELL_ID when that
-   * neighbour does not exist (P2).
+   * neighbour does not exist.
    *
    * Flat table, no hash lookup: this is the Dijkstra inner loop.  For the
    * 4-neighbourhood pass 2 * i, see kNbrStride.
@@ -377,7 +383,7 @@ public:
    * removed something, i.e. exactly by the operations after which a CellId may
    * mean a different cell than before.  Cost updates do **not** bump it, so a
    * cache keyed on version() must still track cost changes itself (that is the
-   * separate counter P7 will need).
+   * separate counter a plan cache will need).
    */
   uint64_t version() const { return version_; }
 
@@ -485,11 +491,11 @@ protected:
    * O(N), hash-free and allocation-free: old_to_new already yields
    * INVALID_CELL_ID for a neighbour that was evicted, so the boundary of the
    * retained region needs no special case, and new id <= old id makes the pass
-   * safe in place — the same argument erase_cells() uses for the cells
+   * safe in place -- the same argument erase_cells() uses for the cells
    * themselves.  Keeping the capacity also matters: a grid that is compacted
    * again and again while it regrows would otherwise reallocate a
    * multi-megabyte block per eviction.  This lives inside erase_cells() so that
-   * no caller can forget it (P2 / the Eviction contract).
+   * no caller can forget it (the Eviction contract).
    */
   void remap_neighbors(const Eviction &ev) {
     for (CellId v = 0; v < static_cast<CellId>(ev.before); ++v) {
@@ -521,11 +527,11 @@ protected:
   // Cell to CellId
   std::unordered_map<Cell, CellId, CellHasher> cell_to_id_;
   /**
-   * Flat neighbour table (P2): nbr_[kNbrStride * id + i] is the CellId of
+   * Flat neighbour table: nbr_[kNbrStride * id + i] is the CellId of
    * neighbor8(cell(id), i), or INVALID_CELL_ID when that cell does not exist.
    *
    * Maintained incrementally by append_cell(), dropped by clear() and remapped
-   * by erase_cells() — the three (and only three) writers of id_to_cell_.
+   * by erase_cells() -- the three (and only three) writers of id_to_cell_.
    * 32 B per cell, i.e. 6.9 MB at 216 k cells.
    */
   std::vector<CellId> nbr_;
@@ -558,8 +564,8 @@ inline float max_cell_coord(float cell_size) {
  * strictly inside the int16_t cell range.
  *
  * Casting a NaN, an infinity or an out-of-range float to int16_t is undefined
- * behaviour; before P6 such a point silently created a phantom cell somewhere
- * in the grid (B8).
+ * behaviour; before this guard such a point silently created a phantom cell
+ * somewhere in the grid.
  */
 inline bool in_cell_range(const Grid &grid, const Point2f &p) {
   const float limit = max_cell_coord(grid.cell_size());
@@ -617,7 +623,7 @@ inline int32_t cell_radius(const Grid &grid, float range) {
  * version stopped at the first non-finite entry, which silently unbounded
  * every layer behind an unbounded one.)
  *
- * Free function (P2) so that the planner can test the robot cell without
+ * Free function so that the planner can test the robot cell without
  * constructing a Graph: a Graph caches the per-vertex result and would be
  * stale once the ad-hoc layer is rewritten.
  */
@@ -658,10 +664,10 @@ inline double bounded_cell_count(int32_t radius_cells) {
  * Drop every cell of @p grid farther than @p range metres from @p center
  * (Chebyshev, i.e. the retained region is the square that contains the disc).
  *
- * This is the whole P6b decision in one place: a @p range <= 0 or NaN, or a
- * @p center that is not a valid cell, is a **no-op** — nothing is removed, no
- * CellId is invalidated and Grid::version() does not change, which is exactly
- * the pre-P6 behaviour of an unbounded map.
+ * This is the whole map-bound decision in one place: a @p range <= 0 or NaN,
+ * or a @p center that is not a valid cell, is a **no-op** -- nothing is
+ * removed, no CellId is invalidated and Grid::version() does not change, which
+ * is exactly the old behaviour of an unbounded map.
  */
 inline Eviction evict_outside_range(Grid &grid, const Point2f &center,
                                     float range) {
@@ -681,7 +687,7 @@ inline Eviction evict_outside_range(Grid &grid, const Point2f &center,
  *
  * Out-of-range layers are ignored.  Kept separate from the planner so that the
  * ad-hoc layer reset can be unit tested and, later, replaced by a dirty-list
- * reset (P3) in exactly one place.
+ * reset in exactly one place.
  */
 inline void fill_layer(Grid &grid, int layer, Cost cost) {
   if (!is_valid_layer(layer)) {
@@ -700,7 +706,7 @@ inline void fill_layer(Grid &grid, int layer, Cost cost) {
  * Cells are never created.  Out-of-range layers are ignored.  Every cell that
  * was written is appended to @p touched when that pointer is not null, so the
  * caller can restore exactly those cells later instead of sweeping the whole
- * grid (P3); the same cell may be appended more than once by overlapping discs,
+ * grid; the same cell may be appended more than once by overlapping discs,
  * which is harmless because restoring is idempotent.
  *
  * Only the cell bounding box of the disc is walked: a cell whose centre is

@@ -448,8 +448,10 @@ public:
   float max_ground_diff_std_{0.1};
   float max_mean_abs_ground_diff_{0.1};
   float min_dist_to_obstacle_{clearance_radius_};
-  /// Max traversable slope, in radians; radians<double>() so that the value
-  /// is the same double expression (30 / 180 * pi) it has always been.
+  /**
+   * Max traversable slope, in radians; radians<double>() so that the value
+   * is the same double expression (30 / 180 * pi) it has always been.
+   */
   float max_pitch_{float(radians(30.))};
   float max_roll_{float(radians(30.))};
   float inclination_penalty_{1.0};
@@ -464,7 +466,7 @@ class Graph {
 public:
   explicit Graph(const Map &map) : map_(map) {}
   inline Vertex num_vertices() const { return map_.num_vertices(); }
-  /** Returns the number of edges in the graph g. */
+  /// Returns the number of edges in the graph g.
   inline Edge num_edges() const { return map_.num_edges(); }
   inline std::pair<VertexIter, VertexIter> vertices() const {
     return map_.vertices();

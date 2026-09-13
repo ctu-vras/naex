@@ -135,7 +135,7 @@ private:
  *
  * One class for both searches, so that the planner and the mule planner can
  * hold it as a value and hand it to the same map-cloud publisher.  It is
- * reusable (P2): compute() and compute_astar() keep the predecessor, path-cost,
+ * reusable: compute() and compute_astar() keep the predecessor, path-cost,
  * f-value and colour buffers across calls, so a repeated search on a grid of
  * the same size allocates nothing.  The runtime @p neighborhood selects
  * between the two compile-time GraphN instantiations; everything else is
@@ -143,8 +143,8 @@ private:
  *
  * The graph (and with it the per-vertex cost cache of GraphN) is built inside
  * every call, so a cost threshold changed by the parameter callback, an ad-hoc
- * cost layer rewritten just before the search, and a grid compacted by the P6
- * eviction are all picked up by the next search without any explicit
+ * cost layer rewritten just before the search, and a grid compacted by the
+ * map_range eviction are all picked up by the next search without any explicit
  * invalidation.
  */
 class ShortestPaths {
@@ -169,8 +169,10 @@ public:
     compute(grid, start, neighborhood, max_costs);
   }
 
-  /// Dijkstra from @p start over the whole grid; anything but
-  /// neighborhood == 4 is the 8-neighbourhood, as before.
+  /**
+   * Dijkstra from @p start over the whole grid; anything but
+   * neighborhood == 4 is the 8-neighbourhood, as before.
+   */
   void compute(const Grid &grid, VertexId start, uint8_t neighborhood = 8,
                const Costs &max_costs = Costs(0.0)) {
     astar_ = false;
