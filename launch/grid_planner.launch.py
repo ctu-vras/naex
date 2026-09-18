@@ -26,14 +26,14 @@ def generate_launch_description():
                         "max_start_to_traversable_dist": 2.0,
                         "position_field": "x",
                         "map_frame": "FP_ENU0",
-                        "robot_frame": "odin1_base_link",
+                        "robot_frame": "base_link",
                         "max_cloud_age": 5.0,
                         # Cloud callbacks must never park the single-threaded
                         # executor on TF, but the timeout still has to
                         # cover one TF period: every drop seen in bag replay
                         # was an "extrapolation into the future" by 1-6 ms
                         # against a 10 Hz TF, i.e. a transform that was there
-                        # one period later.  0.2 = 2 TF periods.
+                        # one period later.  Keep it around 2 TF periods.
                         "cloud_tf_timeout": 0.2,
                         # Timeout of every TF lookup on the get_plan path,
                         # which runs on that same single thread.  All of them
@@ -46,7 +46,10 @@ def generate_launch_description():
                         # Crop of the input cloud around the sensor.
                         # Bounds the per-cloud work; it does not bound the map,
                         # because cells are never removed by it.
-                        "input_range": 5.0,
+                        # Keep it beyond the farthest road_cloud points (5.7-6.2 m from the lidar in the
+                        # 2026-09-14 bags): cropping them all leaves the road layer at default_costs[0] and
+                        # frontier selection prefers driving back to old road over going forward.
+                        "input_range": 8.0,
                         # Bound of the map itself: cells farther than
                         # map_range from the robot are dropped.  0 keeps the
                         # historical behaviour, an unbounded map that grows for
@@ -95,30 +98,32 @@ def generate_launch_description():
                         # So we are saying that the path along this edge is equal to finding a different route to the same goal point
                         # of length 5 meters and with 0 cost.
                         "cloud_weights": [
-                            5.0, 1.0,
+                            0.5, 1.0,
                         ],
                         "max_costs_relative": [
                             100.0, 0.6,
                         ],
                         "default_costs": [   # Careful that these are never multiplied by the cloud_weights!!!
                             # Road layer: a cell no road point landed on (grass, or footway the camera has
-                            # not seen). road_cloud's cost runs 0 (centre) .. 1 (edge), x weight 5 = 0..5, so
-                            # at 5.0 grass cost the same as the outer half of the footway (2026-09-11 bags).
-                            15.0, 0.4,
+                            # not seen). road_cloud's cost runs 0 (centre) .. 1 (edge), times cloud_weights[0].
+                            # Keep it well above cloud_weights[0], or grass costs as much as the footway edge.
+                            7.5, 0.4,
                         ],
                         # Used for finding the best frontier as temporary goal. The cost of the frontier is:
                         # the AStar cost of getting there + euclidean_dist_to_goal * frontier_dist_from_goal_cost
-                        "frontier_dist_from_goal_cost": 1.5,
+                        "frontier_dist_from_goal_cost": 100.5,
                         # Goal snapping: a goal that is not on the road moves to the nearest road cell within
                         # goal_snap_radius, so a waypoint beside the footway plans to the footway edge instead
                         # of onto the grass. A road cell is one whose road-layer cost (level 0, weighted) is
-                        # <= goal_snap_max_cost: 3.5 = road_cloud cost 0.7, inside the outermost rim. Keep it
+                        # <= goal_snap_max_cost, i.e. road_cloud cost <= goal_snap_max_cost / cloud_weights[0];
+                        # keep that ratio below 1 to leave out the outermost rim. Keep it
                         # below default_costs[0], so a cell the road layer never saw never qualifies, and keep
                         # the radius <= crl_commander's sequence_pass_lateral_dist, which then counts the
-                        # waypoint as passed. 0 radius = off.
-                        "goal_snap_radius": 4.5,
+                        # waypoint as passed. A goal whose cell is not in the map yet (beyond input_range) is
+                        # not snapped: it is planned to as is until the robot has seen it. 0 radius = off.
+                        "goal_snap_radius": 0.0,
                         "goal_snap_level": 0,
-                        "goal_snap_max_cost": 3.5,
+                        "goal_snap_max_cost": 1.5,
                         "neighborhood": 8,
                         "planning_freq": 1.0,
                         "num_input_clouds": 2,
