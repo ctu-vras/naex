@@ -847,9 +847,14 @@ CellId nearest_cell(const Grid &grid, const Point2f &p, Accept accept) {
  * which also satisfies costs_in_bounds(costs, max_costs). Returns
  * INVALID_CELL_ID -- i.e. don't move the goal -- when @p level is not a
  * valid layer, @p radius is not a finite positive number, @p goal's own
- * cell already exists and is a snap cell, or no snap cell lies within
- * @p radius (2-D distance to the cell centre, inclusive) of @p goal.
- * Otherwise returns the nearest snap cell.
+ * cell does not exist yet, @p goal's own cell is a snap cell, or no snap
+ * cell lies within @p radius (2-D distance to the cell centre, inclusive) of
+ * @p goal. Otherwise returns the nearest snap cell.
+ *
+ * A goal whose cell does not exist has not been observed (typically it is
+ * beyond input_range), so nothing says it is off the layer. Snapping it would
+ * pull it back to the rim of the observed area, towards the robot, even when
+ * it lies on the road; it is left alone and snapped once it is observed.
  *
  * Reuses nearest_cell() with an accept predicate that ignores @p radius,
  * then checks the result against it: the nearest accepted cell is the
@@ -876,7 +881,7 @@ inline CellId snap_goal_cell(const Grid &grid, const Point2f &goal,
            costs_in_bounds(grid.costs(v), max_costs);
   };
   const CellId goal_id = grid.find_cell(grid.point_to_cell(goal));
-  if (goal_id != INVALID_CELL_ID && is_snap_cell(goal_id)) {
+  if (goal_id == INVALID_CELL_ID || is_snap_cell(goal_id)) {
     return INVALID_CELL_ID;
   }
   const CellId best = nearest_cell(grid, goal, is_snap_cell);

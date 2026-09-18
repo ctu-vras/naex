@@ -581,8 +581,20 @@ TEST(SnapGoalCell, GoalAlreadyOnSnapCellReturnsInvalid) {
             naex::grid::INVALID_CELL_ID);
 }
 
+TEST(SnapGoalCell, UnobservedGoalCellReturnsInvalid) {
+  // The goal's cell was never created (e.g. beyond input_range): it may well
+  // be on the road, so it must not be pulled to the observed cell nearby.
+  Grid grid(1.f, 1.f, Costs(5.f, kNaN, kNaN, kNaN));
+  grid.cell_costs(Cell(2, 0))[0] = 0.5f; // dist 2 from goal, inside radius
+  const Point2f goal(0.5f, 0.5f);
+  EXPECT_EQ(naex::grid::snap_goal_cell(grid, goal, /*radius=*/6.f, /*level=*/0,
+                                       /*max_cost=*/1.f, Costs()),
+            naex::grid::INVALID_CELL_ID);
+}
+
 TEST(SnapGoalCell, SnapsToNearestCellWithinRadius) {
   Grid grid(1.f, 1.f, Costs(5.f, kNaN, kNaN, kNaN));
+  grid.cell_costs(Cell(0, 0));           // observed goal cell, default cost 5
   grid.cell_costs(Cell(2, 0))[0] = 0.5f; // centre (2.5, 0.5), dist 2 from goal
   grid.cell_costs(Cell(5, 0))[0] = 0.5f; // centre (5.5, 0.5), dist 5 from goal
   const Point2f goal(0.5f, 0.5f);
@@ -595,6 +607,7 @@ TEST(SnapGoalCell, SnapsToNearestCellWithinRadius) {
 
 TEST(SnapGoalCell, NoSnapCellWithinRadiusReturnsInvalid) {
   Grid grid(1.f, 1.f, Costs(5.f, kNaN, kNaN, kNaN));
+  grid.cell_costs(Cell(0, 0));           // observed goal cell, default cost 5
   grid.cell_costs(Cell(5, 0))[0] = 0.5f; // dist 5 from goal, outside radius 3
   const Point2f goal(0.5f, 0.5f);
   EXPECT_EQ(naex::grid::snap_goal_cell(grid, goal, /*radius=*/3.f, /*level=*/0,
@@ -606,6 +619,7 @@ TEST(SnapGoalCell, CellViolatingMaxCostsIsSkipped) {
   Grid grid(1.f, 1.f, Costs(5.f, 5.f, kNaN, kNaN));
   // Level-0 cost alone would qualify, but level 1 is out of max_costs bounds,
   // so this cell must not be treated as a snap cell.
+  grid.cell_costs(Cell(0, 0)); // observed goal cell, default costs 5
   Costs &c = grid.cell_costs(Cell(2, 0));
   c[0] = 0.5f;
   c[1] = 10.f;
@@ -618,6 +632,7 @@ TEST(SnapGoalCell, CellViolatingMaxCostsIsSkipped) {
 
 TEST(SnapGoalCell, InvalidLevelOrRadiusReturnsInvalid) {
   Grid grid(1.f, 1.f, Costs(5.f, kNaN, kNaN, kNaN));
+  grid.cell_costs(Cell(0, 0)); // observed goal cell, default cost 5
   grid.cell_costs(Cell(2, 0))[0] = 0.5f;
   const Point2f goal(0.5f, 0.5f);
   EXPECT_EQ(naex::grid::snap_goal_cell(grid, goal, 6.f, /*level=*/-1, 1.f,

@@ -231,10 +231,10 @@ Planner::Planner(rclcpp::Node::SharedPtr nh) : nh_(nh) {
   frontier_dist_from_goal_cost_ = nh_->declare_parameter<float>(
       "frontier_dist_from_goal_cost", frontier_dist_from_goal_cost_);
 
-  // Goal snapping (see snap_goal_cell() in grid.h): a goal not on a cell
-  // whose goal_snap_level cost is at most goal_snap_max_cost (weighted)
-  // moves to the nearest such cell within goal_snap_radius (m). 0 radius =
-  // off.
+  // Goal snapping (see snap_goal_cell() in grid.h): an observed goal not on
+  // a cell whose goal_snap_level cost is at most goal_snap_max_cost
+  // (weighted) moves to the nearest such cell within goal_snap_radius (m).
+  // A goal outside the map is never snapped. 0 radius = off.
   goal_snap_radius_ =
       nh_->declare_parameter<float>("goal_snap_radius", goal_snap_radius_);
   goal_snap_level_ =
