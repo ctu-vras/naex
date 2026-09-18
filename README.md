@@ -82,6 +82,7 @@ tested as *f* > 1e9 and not with `isfinite` after an A\* run
 | `input_range` | double | 10.0 (crop of the input cloud; <= 0 disables; clamped to `map_range` when the map is bounded) |
 | `map_range` | double | 0.0 (bound of the map; 0 = unbounded) |
 | `evict_period` | double | 10.0 (max seconds between two evictions) |
+| `clear_distance` | double | 5.0 (radius kept by the `clear_distant_plan_map` service; <= 0 makes it a no-op) |
 | `cell_size` | double | 1.0 |
 | `forget_factor` | double | 1.0 |
 | `neighborhood` | int | 8 (4 or 8) |
@@ -284,6 +285,21 @@ time spent in these lookups is the `tf=` field of `perf plan:`.
   ```
 
   Both services share one implementation; only the response differs.
+
+- `clear_distant_plan_map` [[nav2_msgs/srv/ClearEntireCostmap](https://docs.ros2.org/latest/api/nav2_msgs/srv/ClearEntireCostmap.html)]
+  — drops only the cells farther than `clear_distance` from the robot, keeping
+  the rest. Empty request and response, so the result is reported on the log
+  (`Distant map cleared: ... removed=N.`):
+
+  ```
+  ros2 service call /clear_distant_plan_map nav2_msgs/srv/ClearEntireCostmap
+  ```
+
+  This is the manual, on-demand counterpart of the `map_range` eviction below,
+  for dropping the stale map behind the robot without losing what is in front
+  of it; it runs the same compaction. It needs `map_frame` -> `robot_frame` to
+  resolve within `request_tf_timeout`; if that fails it logs and clears
+  nothing, and so does a `clear_distance` that is not a positive number.
 
 #### Actions
 

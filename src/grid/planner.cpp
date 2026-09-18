@@ -126,6 +126,10 @@ Planner::Planner(rclcpp::Node::SharedPtr nh) : nh_(nh) {
       nh_->declare_parameter<float>("max_cloud_age", max_cloud_age_);
   // Crop of the input cloud around the sensor; <= 0 or NaN disables it.
   input_range_ = nh_->declare_parameter<float>("input_range", input_range_);
+  // Radius kept by the clear_distant_plan_map service; never applied
+  // automatically, unlike map_range below.
+  clear_distance_ =
+      nh_->declare_parameter<float>("clear_distance", clear_distance_);
   // Bound of the grid itself; 0 (the default) keeps the old
   // behaviour, i.e. an unbounded map that only ever grows.
   map_range_ = nh_->declare_parameter<float>("map_range", map_range_);
@@ -340,6 +344,14 @@ Planner::Planner(rclcpp::Node::SharedPtr nh) : nh_(nh) {
              std_srvs::srv::Trigger::Response::SharedPtr res) {
         this->clear_map(req, res);
       });
+  clear_distant_map_service_ =
+      nh_->create_service<nav2_msgs::srv::ClearEntireCostmap>(
+          "clear_distant_plan_map",
+          [this](
+              const nav2_msgs::srv::ClearEntireCostmap::Request::SharedPtr req,
+              nav2_msgs::srv::ClearEntireCostmap::Response::SharedPtr res) {
+            this->clear_distant_map(req, res);
+          });
   clear_map_costmap_service_ =
       nh_->create_service<nav2_msgs::srv::ClearEntireCostmap>(
           "clear_plan_map",
@@ -404,6 +416,18 @@ Planner::Planner(rclcpp::Node::SharedPtr nh) : nh_(nh) {
                 "Map is unbounded (map_range %.1f): it grows for the whole "
                 "mission.",
                 map_range_);
+  }
+
+  if (clear_distance_ > 0.f) {
+    RCLCPP_INFO(nh_->get_logger(),
+                "Service clear_distant_plan_map keeps the cells within "
+                "clear_distance %.1f m of the robot.",
+                clear_distance_);
+  } else {
+    RCLCPP_WARN(nh_->get_logger(),
+                "clear_distance is %.1f: the clear_distant_plan_map service "
+                "is a no-op. Use clear_plan_map to drop the whole map.",
+                clear_distance_);
   }
 
   RCLCPP_INFO(nh_->get_logger(), "Node initialized.");
@@ -1313,6 +1337,46 @@ void Planner::clear_map_costmap(
   // exists as std_srvs::Trigger on clear_plan_map_trigger, see clear_map()):
   // nothing to fill in, just clear.
   clear_map_impl();
+}
+
+void Planner::clear_distant_map(
+    nav2_msgs::srv::ClearEntireCostmap::Request::SharedPtr,
+    nav2_msgs::srv::ClearEntireCostmap::Response::SharedPtr) {
+  // Outside mtx_ on purpose: the lock must not be held across a TF wait.  The
+  // service callback runs on the only executor thread, so it uses the request
+  // path's timeout and tf2::TimePointZero ("latest available"), like plan().
+  geometry_msgs::msg::PoseStamped robot_pose;
+  try {
+    const auto robot_to_map =
+        tf_->lookupTransform(map_frame_, robot_frame_, tf2::TimePointZero,
+                             tf2::durationFromSec(request_tf_timeout_));
+    transform_to_pose(robot_to_map, robot_pose);
+  } catch (const tf2::TransformException &ex) {
+    // The response carries nothing, so a failure can only be logged.  It must
+    // not escape: an exception out of a service callback leaves
+    // rclcpp::spin() and takes the node down (see grid_planner_node.cpp).
+    RCLCPP_ERROR(nh_->get_logger(),
+                 "Not clearing the distant map: transform %s -> %s failed: %s.",
+                 robot_frame_.c_str(), map_frame_.c_str(), ex.what());
+    return;
+  }
+  const Point2f robot(static_cast<float>(robot_pose.pose.position.x),
+                      static_cast<float>(robot_pose.pose.position.y));
+
+  std::lock_guard<std::mutex> lock(mtx_);
+  // The dirty list holds CellIds, so replay it while they still mean
+  // something, exactly as maybe_evict_cells() does.
+  clear_ad_hoc_layer();
+  // evict_outside_range() is a no-op for a non-positive clear_distance_ or a
+  // robot position that is not a valid cell, so neither silently wipes the map.
+  const Eviction ev = evict_outside_range(grid_, robot, clear_distance_);
+  RCLCPP_WARN(nh_->get_logger(),
+              "Distant map cleared: clear_distance=%.1f center=(%.1f, %.1f) "
+              "cells_before=%lu cells_after=%lu removed=%lu.",
+              clear_distance_, robot.x, robot.y,
+              static_cast<unsigned long>(ev.before),
+              static_cast<unsigned long>(ev.after),
+              static_cast<unsigned long>(ev.removed));
 }
 
 void Planner::clear_ad_hoc_layer() {

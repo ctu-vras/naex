@@ -315,6 +315,26 @@ public:
                  std_srvs::srv::Trigger::Response::SharedPtr res);
 
   /**
+   * Service callback on clear_distant_plan_map: nav2_msgs/ClearEntireCostmap,
+   * the same type as clear_plan_map, but it drops only the cells farther than
+   * clear_distance_ from the robot instead of the whole grid.
+   *
+   * A manual, on-demand version of the map_range eviction, for the operator
+   * who wants the stale map behind the robot gone without losing what is in
+   * front of it. It goes through evict_outside_range() for exactly the reason
+   * maybe_evict_cells() does: that is the only compaction that honours the
+   * Eviction contract in grid.h (the neighbour table, the structural version,
+   * the renumbering), so nothing that caches a CellId is left holding one that
+   * now means a different cell.
+   *
+   * The TF lookup runs before mtx_ is taken: the lock must not be held across
+   * a blocking TF wait (see mtx_).
+   */
+  void
+  clear_distant_map(nav2_msgs::srv::ClearEntireCostmap::Request::SharedPtr,
+                    nav2_msgs::srv::ClearEntireCostmap::Response::SharedPtr);
+
+  /**
    * Restore the ad-hoc layer of every cell the last apply touched.
    *
    * Equivalent to fill_layer() over the whole grid only because nothing else
@@ -432,6 +452,14 @@ protected:
   std::shared_ptr<rclcpp::ParameterEventHandler> param_subscriber_;
   std::shared_ptr<rclcpp::ParameterCallbackHandle> cb_handle_;
 
+  /**
+   * m; radius around the robot that the clear_distant_plan_map service keeps,
+   * everything beyond it is dropped. Unlike map_range_ this is never applied
+   * automatically; it only runs when the service is called. <= 0 or NaN makes
+   * the service a no-op rather than a full wipe.
+   */
+  float clear_distance_{5.f};
+
   // A* and frontier goal selection
   bool use_astar_{false};
   /// m; cells farther than this from the start cell are not expanded.
@@ -510,6 +538,8 @@ protected:
   rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr clear_map_service_;
   rclcpp::Service<nav2_msgs::srv::ClearEntireCostmap>::SharedPtr
       clear_map_costmap_service_;
+  rclcpp::Service<nav2_msgs::srv::ClearEntireCostmap>::SharedPtr
+      clear_distant_map_service_;
 
   // Input
   std::string position_field_{"x"};
