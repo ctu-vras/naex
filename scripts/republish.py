@@ -36,7 +36,7 @@ class PathToBaseLink(Node):
                 timeout=Duration(seconds=0.5),
             )
         except Exception as e:
-            self.get_logger().warn(f'TF lookup {msg.header.frame_id} -> {self.target_frame} failed: {e}')
+            self.get_logger().warning(f'TF lookup {msg.header.frame_id} -> {self.target_frame} failed: {e}')
             return
 
         out = Path()
