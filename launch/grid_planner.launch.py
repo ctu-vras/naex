@@ -13,7 +13,7 @@ def generate_launch_description():
                 parameters=[
                     {
                         "use_astar": True,
-                        "astar_max_range": 20.0, # meters radius to perform search around the start vertex
+                        "astar_max_range": 100.0, # meters radius to perform search around the start vertex
                         "frontier_min_dist": 2.,    # generally keep this above lookahead point distance of controller
                         "frontier_max_neighbors": 7, # probably don't change this
                         "max_relative_dist_to_goal": 2.0,
