@@ -13,6 +13,7 @@
 #include <limits>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <sensor_msgs/point_cloud2_iterator.hpp>
 #include <sstream>
 #include <stdexcept>
@@ -222,6 +223,8 @@ Planner::Planner(rclcpp::Node::SharedPtr nh) : nh_(nh) {
   use_astar_ = nh_->declare_parameter<bool>("use_astar", use_astar_);
   astar_max_range_ =
       nh_->declare_parameter<float>("astar_max_range", astar_max_range_);
+  planning_clearance_ =
+      nh_->declare_parameter<float>("planning_clearance", planning_clearance_);
   frontier_min_dist_ =
       nh_->declare_parameter<float>("frontier_min_dist", frontier_min_dist_);
   frontier_max_neighbors_ = nh_->declare_parameter<int>(
@@ -969,13 +972,22 @@ bool Planner::plan(const geometry_msgs::msg::PoseStamped &start_in,
   // and f-value buffers keep their capacity, so a steady-state cycle
   // allocates nothing here.
   Timer t_search;
+  // The exception to the above is planning_clearance: it searches a modified
+  // copy of the grid.  CellIds and traversability match grid_, so everything
+  // after the search keeps using grid_.
+  std::optional<Grid> clearance_grid;
+  if (planning_clearance_ > 0.f) {
+    clearance_grid = apply_clearance_costs(grid_, planning_clearance_,
+                                           max_costs_absolute_);
+  }
+  const Grid &search_grid = clearance_grid ? *clearance_grid : grid_;
   ShortestPaths &sp = shortest_paths_;
   if (use_astar_) {
-    sp.compute_astar(nh_->get_logger(), grid_, v0, p1, is_goal_explored,
+    sp.compute_astar(nh_->get_logger(), search_grid, v0, p1, is_goal_explored,
                      astar_max_range_, static_cast<uint8_t>(neighborhood_),
                      max_costs_absolute_);
   } else {
-    sp.compute(grid_, v0, static_cast<uint8_t>(neighborhood_),
+    sp.compute(search_grid, v0, static_cast<uint8_t>(neighborhood_),
                max_costs_absolute_);
   }
   plan_timings_.dijkstra = t_search.seconds_elapsed();

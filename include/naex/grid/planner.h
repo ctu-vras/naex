@@ -464,6 +464,12 @@ protected:
   bool use_astar_{false};
   /// m; cells farther than this from the start cell are not expanded.
   float astar_max_range_{50.};
+  /**
+   * m; if > 0, the search runs on a copy of the grid in which cells this close
+   * to a hard obstacle cost more (see apply_clearance_costs()).  0 disables
+   * it and the copy.
+   */
+  float planning_clearance_{0.f};
   /// m; frontier cells closer than this to the robot are ignored.
   float frontier_min_dist_{3.};
   /**

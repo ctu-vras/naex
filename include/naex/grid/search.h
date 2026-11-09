@@ -12,11 +12,95 @@
 #include <cstdint>
 #include <functional>
 #include <limits>
+#include <queue>
 #include <rclcpp/rclcpp.hpp>
+#include <utility>
 #include <vector>
 
 namespace naex {
 namespace grid {
+
+/**
+ * For every cell, the chamfer-approximated Euclidean distance in meters to
+ * the nearest hard obstacle, i.e. a cell whose costs are out of @p max_costs.
+ *
+ * Multi-source Dijkstra over the 8-neighbourhood.  Obstacle cells get 0, cells
+ * with no obstacle in their connected component get INF.  Only existing cells
+ * are considered: unexplored space is not an obstacle.
+ */
+inline std::vector<Cost> distance_to_nearest_obstacle(const Grid &grid,
+                                                      const Costs &max_costs) {
+  const VertexId n = static_cast<VertexId>(grid.size());
+  std::vector<Cost> dist(n, std::numeric_limits<Cost>::infinity());
+  using QueueEntry = std::pair<Cost, VertexId>;
+  std::priority_queue<QueueEntry, std::vector<QueueEntry>,
+                      std::greater<QueueEntry>>
+      queue;
+
+  for (VertexId v = 0; v < n; ++v) {
+    if (!costs_in_bounds(grid.costs(v), max_costs)) {
+      dist[v] = 0.f;
+      queue.emplace(0.f, v);
+    }
+  }
+
+  const float cell_size = grid.cell_size();
+  while (!queue.empty()) {
+    const auto [d, u] = queue.top();
+    queue.pop();
+    if (d > dist[u]) {
+      continue;
+    }
+    for (int i = 0; i < 8; ++i) {
+      const CellId w = grid.neighbor_id(u, i);
+      if (w == INVALID_CELL_ID) {
+        continue;
+      }
+      const Cost candidate = d + distance8(i) * cell_size;
+      if (candidate < dist[w]) {
+        dist[w] = candidate;
+        queue.emplace(candidate, w);
+      }
+    }
+  }
+  return dist;
+}
+
+/**
+ * Copy of @p grid in which every non-obstacle cell closer than @p clearance
+ * meters to a hard obstacle has each bounded cost pulled toward that layer's
+ * max cost, more so the closer the cell is to the obstacle.
+ *
+ * Discourages paths from hugging obstacles.  The result is the average of the
+ * original cost and a value <= the max cost, so a traversable cell never
+ * becomes an obstacle.  Cells keep their CellIds.
+ */
+inline Grid apply_clearance_costs(const Grid &grid, float clearance,
+                                  const Costs &max_costs) {
+  if (!(clearance > 0.f)) {
+    return grid;
+  }
+
+  Grid result = grid;
+  const std::vector<Cost> dist = distance_to_nearest_obstacle(grid, max_costs);
+
+  for (VertexId v = 0; v < static_cast<VertexId>(grid.size()); ++v) {
+    if (!(dist[v] > 0.f) || !(dist[v] < clearance)) {
+      // The obstacle itself, or already far enough away.
+      continue;
+    }
+    const Costs &original = grid.costs(v);
+    Costs &altered = result.costs(v);
+    for (size_t j = 0; j < Costs::kSize; ++j) {
+      if (!std::isfinite(max_costs[j]) || std::isnan(original[j])) {
+        continue;
+      }
+      const Cost clearance_weight = ((clearance - dist[v]) / clearance);
+      altered[j] = (1.0f-clearance_weight) * original[j] + clearance_weight * max_costs[j];
+    }
+  }
+  return result;
+}
 
 /// Euclidean distance between the centres of cells @p u and @p v.
 inline Value cell_distance(const Grid &grid, VertexId u, VertexId v) {

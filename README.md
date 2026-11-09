@@ -94,6 +94,7 @@ tested as *f* > 1e9 and not with `isfinite` after an A\* run
 | `default_costs` | double[] | 1.0 per cost field / input cloud |
 | `use_astar` | bool | false (false: Dijkstra over the whole grid) |
 | `astar_max_range` | double | 50.0 m |
+| `planning_clearance` | double | 0.0 m (if > 0, cells this close to a hard obstacle cost more during the search; 0 disables it) |
 | `frontier_min_dist` | double | 3.0 m |
 | `frontier_max_neighbors` | int | 5 |
 | `max_relative_dist_to_goal` | double | 2.0 |
