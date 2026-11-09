@@ -11,9 +11,11 @@
 
 #include "naex/grid/graph.h"
 #include "naex/grid/grid.h"
+#include "naex/grid/map_file.h"
 #include "naex/grid/search.h"
 #include "naex/types.h"
 #include <cstddef>
+#include <future>
 #include <geometry_msgs/msg/point.hpp>
 #include <geometry_msgs/msg/pose_stamped.hpp>
 #include <limits>
@@ -27,6 +29,7 @@
 #include <nav_msgs/msg/occupancy_grid.hpp>
 #include <nav_msgs/msg/path.hpp>
 #include <nav_msgs/srv/get_plan.hpp>
+#include <optional>
 #include <rclcpp/rclcpp.hpp>
 #include <sensor_msgs/msg/point_cloud2.hpp>
 #include <std_msgs/msg/float32.hpp>
@@ -83,6 +86,10 @@ inline constexpr int kFrameWarnThrottleMs = 1000;
 inline constexpr int kTfDropWarnThrottleMs = 2000;
 /// Throttle period (ms) of the "robot is not a valid cell" eviction warning.
 inline constexpr int kEvictWarnThrottleMs = 5000;
+/// Throttle period (ms) of the warnings about a map save or load waiting on TF.
+inline constexpr int kMapFileWarnThrottleMs = 10000;
+/// Period (s) of the retries of a map load waiting for the earth frame.
+inline constexpr double kMapLoadRetryPeriod = 1.0;
 
 /**
  * Per-cycle timing breakdown of Planner::plan().
@@ -413,6 +420,39 @@ protected:
    */
   void update_max_costs_absolute(bool log);
 
+  /// What a saved map must have been built with to be usable here.
+  MapConfig map_config() const;
+
+  /**
+   * Constructor half of map persistence: read and validate map_load_path_,
+   * keep one backup of a map about to be overwritten, start the timers.
+   *
+   * A map that cannot be used never aborts the node.  It is renamed to
+   * `.rejected` and the planner starts empty, because the same file is usually
+   * also the save target and the next save would destroy it.
+   */
+  void init_map_persistence();
+
+  /**
+   * Merge the map read at start-up, once earth_frame_ -> map_frame_ exists.
+   *
+   * Retried on a timer rather than done in the constructor because the
+   * transform needs a GNSS fix.  Cells observed in the meantime keep their
+   * costs, see merge_cells().
+   */
+  void try_finish_map_load();
+
+  /**
+   * Snapshot the grid under mtx_ (O(N), ~4 ms at 216 k cells) and write it on a
+   * background thread, so that a slow disk stalls neither the executor nor a
+   * plan.
+   *
+   * Skipped while a load is pending, so a nearly empty map can never replace
+   * the one being recovered, and while the transform is unavailable, because
+   * a map without a pose in the earth frame could not be reloaded.
+   */
+  void save_map_timer();
+
   /**
    * Validate the per-cost-field parameter vectors.
    *
@@ -522,6 +562,29 @@ protected:
   float cloud_tf_timeout_{0.2};
   std::string map_frame_{"map"};
   std::string robot_frame_{"base_footprint"};
+  /// Global frame relating maps saved in different runs.
+  std::string earth_frame_{"FP_ECEF"};
+
+  // Map persistence
+  /// Written periodically, latest only; empty disables saving.
+  std::string map_save_path_;
+  /// Merged at start-up; empty disables loading.
+  std::string map_load_path_;
+  /// s; <= 0 disables saving.
+  float map_save_period_{60.0f};
+  rclcpp::TimerBase::SharedPtr map_save_timer_;
+  rclcpp::TimerBase::SharedPtr map_load_timer_;
+  /**
+   * The map read at start-up until it has been merged.  Touched only by the
+   * constructor and by timers on the single executor thread, so not guarded
+   * by mtx_.
+   */
+  std::optional<MapSnapshot> pending_map_;
+  /**
+   * The running background write.  Its destructor waits for the write, and the
+   * job holds no reference to this object, so shutdown needs no extra care.
+   */
+  std::future<void> map_save_job_;
 
   // Publishers
   rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr map_pub_;

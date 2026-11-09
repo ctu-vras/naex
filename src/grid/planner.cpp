@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <filesystem>
 #include <geometry_msgs/msg/transform_stamped.hpp>
 #include <iomanip>
 #include <limits>
@@ -72,6 +73,12 @@ constexpr double kFrontierMarkerColorG = 224.0;
 constexpr double kFrontierMarkerColorB = 208.0;
 constexpr double kFrontierMarkerAlpha = 1.0;
 
+MapPose to_map_pose(const geometry_msgs::msg::TransformStamped &tf) {
+  const auto &t = tf.transform.translation;
+  const auto &q = tf.transform.rotation;
+  return {t.x, t.y, t.z, q.x, q.y, q.z, q.w};
+}
+
 } // namespace
 
 Planner::Planner(rclcpp::Node::SharedPtr nh) : nh_(nh) {
@@ -109,6 +116,14 @@ Planner::Planner(rclcpp::Node::SharedPtr nh) : nh_(nh) {
   map_frame_ = nh_->declare_parameter<std::string>("map_frame", map_frame_);
   robot_frame_ =
       nh_->declare_parameter<std::string>("robot_frame", robot_frame_);
+  earth_frame_ =
+      nh_->declare_parameter<std::string>("earth_frame", earth_frame_);
+  map_save_path_ =
+      nh_->declare_parameter<std::string>("map_save_path", map_save_path_);
+  map_save_period_ =
+      nh_->declare_parameter<float>("map_save_period", map_save_period_);
+  map_load_path_ =
+      nh_->declare_parameter<std::string>("map_load_path", map_load_path_);
   // Cloud callbacks run on the only executor thread, so a long wait here
   // stalls the planning timer and the get_plan service; drop the frame
   // instead.  It still has to cover one TF period: with a 10 Hz TF the
@@ -433,7 +448,197 @@ Planner::Planner(rclcpp::Node::SharedPtr nh) : nh_(nh) {
                 clear_distance_);
   }
 
+  init_map_persistence();
+
   RCLCPP_INFO(nh_->get_logger(), "Node initialized.");
+}
+
+MapConfig Planner::map_config() const {
+  MapConfig config;
+  config.cell_size = grid_.cell_size();
+  config.earth_frame = earth_frame_;
+  config.cost_fields = cost_fields_;
+  config.cloud_levels.assign(cloud_levels_.begin(), cloud_levels_.end());
+  config.cloud_weights = cloud_weights_;
+  config.default_costs = default_costs_;
+  return config;
+}
+
+void Planner::init_map_persistence() {
+  namespace fs = std::filesystem;
+  std::error_code ec;
+
+  if (!map_load_path_.empty()) {
+    if (!fs::exists(map_load_path_, ec)) {
+      RCLCPP_WARN(nh_->get_logger(),
+                  "Map file %s does not exist, starting with an empty map.",
+                  map_load_path_.c_str());
+    } else {
+      try {
+        MapSnapshot saved = read_map_file(map_load_path_);
+        const std::string mismatch =
+            describe_config_mismatch(saved.config, map_config());
+        if (!mismatch.empty()) {
+          throw std::runtime_error(mismatch);
+        }
+        RCLCPP_INFO(nh_->get_logger(),
+                    "Read %lu cells (frame %s) from %s, waiting for %s -> %s.",
+                    static_cast<unsigned long>(saved.cells.cells.size()),
+                    saved.map_frame.c_str(), map_load_path_.c_str(),
+                    earth_frame_.c_str(), map_frame_.c_str());
+        pending_map_ = std::move(saved);
+      } catch (const std::exception &ex) {
+        const std::string rejected = map_load_path_ + ".rejected";
+        fs::rename(map_load_path_, rejected, ec);
+        const std::string fate = ec ? "left in place" : "moved to " + rejected;
+        RCLCPP_ERROR(nh_->get_logger(),
+                     "Cannot use map %s: %s. Starting with an empty map; the "
+                     "file was %s.",
+                     map_load_path_.c_str(), ex.what(), fate.c_str());
+      }
+    }
+  }
+
+  // Saving keeps only the latest map, so a run that does not load the existing
+  // file would otherwise destroy it within one save period.  Recovering from
+  // the backup itself must not overwrite the backup either.
+  const std::string backup = map_save_path_ + ".prev";
+  const bool recovering_existing =
+      pending_map_ && (fs::equivalent(map_load_path_, map_save_path_, ec) ||
+                       fs::equivalent(map_load_path_, backup, ec));
+  if (!map_save_path_.empty() && !recovering_existing &&
+      fs::exists(map_save_path_, ec)) {
+    fs::rename(map_save_path_, backup, ec);
+    if (ec) {
+      RCLCPP_ERROR(nh_->get_logger(),
+                   "Cannot back up %s to %s (%s): saving is disabled so that "
+                   "the existing map is not overwritten.",
+                   map_save_path_.c_str(), backup.c_str(),
+                   ec.message().c_str());
+      map_save_path_.clear();
+    } else {
+      RCLCPP_WARN(nh_->get_logger(),
+                  "Existing map %s is not being loaded, kept it as %s.",
+                  map_save_path_.c_str(), backup.c_str());
+    }
+  }
+
+  if (pending_map_) {
+    map_load_timer_ = nh_->create_wall_timer(
+        std::chrono::duration<double>(kMapLoadRetryPeriod),
+        [this]() { this->try_finish_map_load(); });
+  }
+  if (map_save_path_.empty() || !(map_save_period_ > 0.f)) {
+    RCLCPP_INFO(nh_->get_logger(), "The map is not saved periodically.");
+    return;
+  }
+  RCLCPP_INFO(nh_->get_logger(), "Saving the map to %s every %.1f s.",
+              map_save_path_.c_str(), map_save_period_);
+  map_save_timer_ =
+      nh_->create_wall_timer(std::chrono::duration<double>(map_save_period_),
+                             [this]() { this->save_map_timer(); });
+}
+
+void Planner::try_finish_map_load() {
+  geometry_msgs::msg::TransformStamped earth_from_map;
+  try {
+    // No timeout: this runs on the only executor thread and is retried anyway.
+    earth_from_map =
+        tf_->lookupTransform(earth_frame_, map_frame_, tf2::TimePointZero);
+  } catch (const tf2::TransformException &ex) {
+    RCLCPP_WARN_THROTTLE(nh_->get_logger(), *nh_->get_clock(),
+                         kMapFileWarnThrottleMs,
+                         "Map load (and saving) waits for %s -> %s: %s",
+                         earth_frame_.c_str(), map_frame_.c_str(), ex.what());
+    return;
+  }
+  map_load_timer_->cancel();
+
+  const Rigid2 new_from_old = relative_rigid2(pending_map_->earth_from_map,
+                                              to_map_pose(earth_from_map));
+  const MapCells cells =
+      resample_cells(pending_map_->cells, grid_.cell_size(), new_from_old);
+
+  size_t added = 0;
+  size_t total = 0;
+  {
+    // Top-level entry point (see mtx_); only the merge needs the lock.
+    std::lock_guard<std::mutex> lock(mtx_);
+    added = merge_cells(grid_, cells);
+    total = grid_.size();
+  }
+  RCLCPP_WARN(nh_->get_logger(),
+              "Loaded the map: %lu of %lu cells added (the rest were already "
+              "observed), %lu in total; old frame maps to the new one with "
+              "shift (%.3f, %.3f) m, yaw %.5f rad.",
+              static_cast<unsigned long>(added),
+              static_cast<unsigned long>(cells.cells.size()),
+              static_cast<unsigned long>(total), new_from_old.tx,
+              new_from_old.ty, std::atan2(new_from_old.s, new_from_old.c));
+  pending_map_.reset();
+}
+
+void Planner::save_map_timer() {
+  if (pending_map_) {
+    return; // try_finish_map_load() warns about what it is waiting for.
+  }
+  if (map_save_job_.valid() && map_save_job_.wait_for(std::chrono::seconds(
+                                   0)) != std::future_status::ready) {
+    RCLCPP_WARN(nh_->get_logger(),
+                "Skipping a map save: the previous one is still being "
+                "written.");
+    return;
+  }
+
+  MapSnapshot snapshot;
+  snapshot.config = map_config();
+  snapshot.map_frame = map_frame_;
+  try {
+    // No timeout: must not park the only executor thread, the next save
+    // retries.
+    snapshot.earth_from_map = to_map_pose(
+        tf_->lookupTransform(earth_frame_, map_frame_, tf2::TimePointZero));
+  } catch (const tf2::TransformException &ex) {
+    RCLCPP_WARN_THROTTLE(nh_->get_logger(), *nh_->get_clock(),
+                         kMapFileWarnThrottleMs,
+                         "Not saving the map, no %s -> %s: %s",
+                         earth_frame_.c_str(), map_frame_.c_str(), ex.what());
+    return;
+  }
+
+  Timer t_copy;
+  {
+    // Top-level entry point (see mtx_); only the copy needs the lock.
+    std::lock_guard<std::mutex> lock(mtx_);
+    snapshot.cells = copy_cells(grid_);
+  }
+  const double copy_seconds = t_copy.seconds_elapsed();
+
+  // The sidelobes are drawn around the robot's current pose and restored
+  // through adhoc_dirty_, which does not survive a restart.  Nothing else
+  // writes this layer (check_input_parameters()), so the default is exact.
+  if (is_valid_layer(adhoc_layer_)) {
+    const Cost def = default_costs_[adhoc_layer_];
+    for (Costs &costs : snapshot.cells.costs) {
+      costs[static_cast<size_t>(adhoc_layer_)] = def;
+    }
+  }
+
+  map_save_job_ = std::async(
+      std::launch::async,
+      [snapshot = std::move(snapshot), path = map_save_path_,
+       logger = nh_->get_logger(), copy_seconds]() {
+        Timer t_write;
+        try {
+          write_map_file(path, snapshot);
+          RCLCPP_INFO(logger,
+                      "perf map save: cells=%lu copy=%.4f write=%.4f path=%s",
+                      static_cast<unsigned long>(snapshot.cells.cells.size()),
+                      copy_seconds, t_write.seconds_elapsed(), path.c_str());
+        } catch (const std::exception &ex) {
+          RCLCPP_ERROR(logger, "Saving the map failed: %s", ex.what());
+        }
+      });
 }
 
 void Planner::start_planning() {

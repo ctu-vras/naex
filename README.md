@@ -76,6 +76,10 @@ tested as *f* > 1e9 and not with `isfinite` after an A\* run
 | `inflation_radius` | double[] | `0.0` per cost field (m; disabled) |
 | `map_frame` | string | `map` |
 | `robot_frame` | string | `base_footprint` |
+| `earth_frame` | string | `FP_ECEF` (global frame that relates maps saved in different runs) |
+| `map_save_path` | string | empty (file the map is saved to, latest only; empty disables saving) |
+| `map_save_period` | double | 60.0 (seconds between two saves; <= 0 disables saving) |
+| `map_load_path` | string | empty (saved map merged at start-up; empty disables loading) |
 | `request_tf_timeout` | double | 0.5 (every TF lookup on the `get_plan` path) |
 | `cloud_tf_timeout` | double | 0.2 (per-cloud lookup; late clouds are dropped) |
 | `max_cloud_age` | double | 5.0 |
@@ -235,6 +239,26 @@ with `now()`, so the buffer is never asked for a transform it cannot have yet),
 so the timeout can only elapse when TF is genuinely absent — and then failing
 fast with a warning is what the caller wants, not a stalled node. The total
 time spent in these lookups is the `tf=` field of `perf plan:`.
+
+##### Saving and reloading the map: `map_save_path` and `map_load_path`
+
+Every `map_save_period` seconds the grid is written to `map_save_path`, in
+`map_frame`, together with the pose of `map_frame` in `earth_frame`. The file is
+replaced atomically, so a crash during a save leaves the previous map intact.
+
+`map_load_path` is read at start-up. The merge waits until the
+`earth_frame` -> `map_frame` transform exists, and no save happens before it,
+so the map being recovered cannot be overwritten. Cells are re-expressed in the
+current `map_frame`, so its origin may differ between runs; alignment is only as
+good as the GNSS fix of both runs, and costs can shift by up to half a cell.
+Cells already observed in this run keep their costs.
+
+A file saved with a different `earth_frame`, `cell_size`, `cost_fields`,
+`cloud_levels`, `cloud_weights` or `default_costs` is refused and renamed to
+`<file>.rejected`, as is a damaged one; the planner then starts empty. An
+existing `map_save_path` that is not being loaded is kept as `<file>.prev`, one
+backup only. With `map_range > 0`, the first eviction drops loaded cells beyond
+that range.
 
 #### Subscribed topics
 

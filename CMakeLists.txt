@@ -88,6 +88,7 @@ target_link_libraries(naex_core
 # it needs the nav_msgs/tf2_ros/visualization_msgs stack that naex_core does
 # not.
 add_library(naex_grid STATIC
+  src/grid/map_file.cpp
   src/grid/path.cpp
   src/grid/planner.cpp)
 set_target_properties(naex_grid PROPERTIES POSITION_INDEPENDENT_CODE ON)
@@ -285,6 +286,12 @@ if(BUILD_TESTING)
             ${nav_msgs_TARGETS}
             ${sensor_msgs_TARGETS}
             ${visualization_msgs_TARGETS})
+    endif()
+    ament_add_gtest(test_map_file test/test_map_file.cpp)
+    if(TARGET test_map_file)
+        target_include_directories(test_map_file PRIVATE
+            $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>)
+        target_link_libraries(test_map_file naex_grid)
     endif()
 endif()
 

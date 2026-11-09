@@ -1,10 +1,22 @@
+import os
+
 from launch import LaunchDescription
+from launch.actions import DeclareLaunchArgument
+from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
+from launch_ros.parameter_descriptions import ParameterValue
+
+MAP_FILE = os.path.expanduser("~/.ros/naex/grid_planner_map.bin")
 
 
 def generate_launch_description():
     return LaunchDescription(
         [
+            DeclareLaunchArgument(
+                "map_load_path",
+                default_value="",
+                description=f"Absolute path of a saved map to load, e.g. {MAP_FILE}. Empty starts with an empty map.",
+            ),
             Node(
                 package="naex",
                 executable="grid_planner",
@@ -28,6 +40,13 @@ def generate_launch_description():
                         "position_field": "x",
                         "map_frame": "FP_ENU0",
                         "robot_frame": "base_link",
+                        # Global frame relating maps saved in different runs.
+                        "earth_frame": "FP_ECEF",
+                        # Latest map only; an existing file that is not being
+                        # loaded is kept once as <file>.prev.
+                        "map_save_path": MAP_FILE,
+                        "map_save_period": 60.0,
+                        "map_load_path": ParameterValue(LaunchConfiguration("map_load_path"), value_type=str),
                         "max_cloud_age": 5.0,
                         # Cloud callbacks must never park the single-threaded
                         # executor on TF, but the timeout still has to
