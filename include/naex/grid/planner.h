@@ -90,6 +90,13 @@ inline constexpr int kEvictWarnThrottleMs = 5000;
 inline constexpr int kMapFileWarnThrottleMs = 10000;
 /// Period (s) of the retries of a map load waiting for the earth frame.
 inline constexpr double kMapLoadRetryPeriod = 1.0;
+/**
+ * Cell budget of the goal_enclosure() fill; a pocket larger than this is not
+ * judged enclosed.  The fill is also bounded by astar_max_range, which at the
+ * usual 20 m / 0.6 m holds ~3.5 k cells, so this only matters for a large
+ * astar_max_range.
+ */
+inline constexpr size_t kMaxGoalEnclosureCells = 20000;
 
 /**
  * Per-cycle timing breakdown of Planner::plan().

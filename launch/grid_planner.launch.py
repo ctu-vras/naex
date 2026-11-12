@@ -66,10 +66,7 @@ def generate_launch_description():
                         # Crop of the input cloud around the sensor.
                         # Bounds the per-cloud work; it does not bound the map,
                         # because cells are never removed by it.
-                        # Keep it beyond the farthest road_cloud points (5.7-6.2 m from the lidar in the
-                        # 2026-09-14 bags): cropping them all leaves the road layer at default_costs[0] and
-                        # frontier selection prefers driving back to old road over going forward.
-                        "input_range": 8.0,
+                        "input_range": 5.0,
                         # Bound of the map itself: cells farther than
                         # map_range from the robot are dropped.  0 keeps the
                         # historical behaviour, an unbounded map that grows for
@@ -87,20 +84,20 @@ def generate_launch_description():
                         # while the robot stands still; it also evicts after
                         # 0.25 * map_range of travel.
                         "evict_period": 10.0,
-                        "cell_size": 0.2,
+                        "cell_size": 0.6,
                         "forget_factor": 1.0,
-                        "cost_fields": ["cost", "traversability"],
-                        "which_cloud": [0, 1],
+                        "cost_fields": ["traversability"],
+                        "which_cloud": [0],
                         # Cost layer each cost field is written to; defaults to
                         # the index of the field.  Must not name adhoc_layer.
-                        "cloud_levels": [0, 1],
+                        "cloud_levels": [0],
                         # Per-cost-field threshold (parallel to cost_fields).
                         # A point is only added to the grid for a cost field if its
                         # value is strictly greater than the corresponding threshold.
                         # Use -inf (default) to keep every point. E.g. for a binary
                         # segmentation cloud, set 0.0 to only keep obstacle points (>0).
                         "min_cloud_values": [
-                            float("-inf"), float("-inf"),
+                            float("-inf"),
                         ],
                         # Per-cost-field obstacle inflation radius in meters
                         # (parallel to cost_fields). For an above-threshold
@@ -109,7 +106,7 @@ def generate_launch_description():
                         # Keep 0.0 for the continuous geometric layer; set a
                         # positive value only for a binary segmentation cloud.
                         "inflation_radius": [
-                            0.0, 0.0,
+                            0.0,
                         ],
                         # Don't forget that cloud_weights are not relative, becuase in the planner they are combined
                         # with the euclidean length of the edge in meters.
@@ -118,20 +115,17 @@ def generate_launch_description():
                         # So we are saying that the path along this edge is equal to finding a different route to the same goal point
                         # of length 5 meters and with 0 cost.
                         "cloud_weights": [
-                            0.5, 1.0,
+                            1.0,
                         ],
                         "max_costs_relative": [
-                            100.0, 0.6,
+                            0.7,
                         ],
                         "default_costs": [   # Careful that these are never multiplied by the cloud_weights!!!
-                            # Road layer: a cell no road point landed on (grass, or footway the camera has
-                            # not seen). road_cloud's cost runs 0 (centre) .. 1 (edge), times cloud_weights[0].
-                            # Keep it well above cloud_weights[0], or grass costs as much as the footway edge.
-                            7.5, 0.4,
+                            0.0,
                         ],
                         # Used for finding the best frontier as temporary goal. The cost of the frontier is:
                         # the AStar cost of getting there + euclidean_dist_to_goal * frontier_dist_from_goal_cost
-                        "frontier_dist_from_goal_cost": 100.5,
+                        "frontier_dist_from_goal_cost": 1.5,
                         # Goal snapping: a goal that is not on the road moves to the nearest road cell within
                         # goal_snap_radius, so a waypoint beside the footway plans to the footway edge instead
                         # of onto the grass. A road cell is one whose road-layer cost (level 0, weighted) is
@@ -167,9 +161,7 @@ def generate_launch_description():
                 ],
                 remappings=[
                     #("input_cloud_0", "osm_grid"),
-                    ("input_cloud_0", "road_cloud"),
-                    # ("input_cloud_1", "unexplored_map"),
-                    ("input_cloud_1", "terrain_map"),
+                    ("input_cloud_0", "terrain_map"),
                     # ("input_cloud_0", "traversability_cloud"),
                     ("map_occupancy_grid", "naex/map_occupancy_grid"),
                     ("grid_planner/compute_path_to_pose", "astar/compute_path_to_pose"),

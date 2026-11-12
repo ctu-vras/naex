@@ -906,6 +906,18 @@ VertexId Planner::select_astar_goal_vertex(const ShortestPaths &sp, VertexId v0,
   const bool is_goal_in_obstacle =
       is_goal_explored &&
       !costs_in_bounds(grid_.costs(v_goal), max_costs_absolute_);
+  // A goal walled in on every side is as unreachable as one in an obstacle.
+  // Frontiers cannot help there: the only ones near it are on the inside of
+  // the wall, so the choice would fall on one far away, e.g. on the edge of
+  // the range crop beyond the goal.
+  bool is_goal_enclosed = false;
+  if (!sp.found_goal() && !is_goal_in_obstacle) {
+    is_goal_enclosed =
+        goal_enclosure(grid_, sp, v0, Point2f(p1.x(), p1.y()),
+                       astar_max_range_, max_costs_absolute_,
+                       static_cast<uint8_t>(neighborhood_),
+                       kMaxGoalEnclosureCells) == GoalEnclosure::kEnclosed;
+  }
 
   if (sp.found_goal()) {
     // The goal is reachable.  If the cost-optimal route is much longer than
@@ -926,16 +938,15 @@ VertexId Planner::select_astar_goal_vertex(const ShortestPaths &sp, VertexId v0,
                   "Goal is close. Choosing it as plan target.");
       v1 = v_goal;
     }
-  } else if (is_goal_in_obstacle) {
+  } else if (is_goal_in_obstacle || is_goal_enclosed) {
     RCLCPP_INFO(nh_->get_logger(),
-                "Goal is in obstacle. Choosing nearest reachable point as "
-                "target.");
+                "Goal is %s. Choosing nearest reachable point as target.",
+                is_goal_in_obstacle ? "in obstacle" : "walled in");
     Timer t_scan;
-    v1 = nearest_cell(grid_, Point2f(p1.x(), p1.y()), [&sp](CellId v) {
-      // Unreached cells carry FLT_MAX (or INF when cropped out); see
-      // ShortestPaths::kUnreachableCost.
-      return !(sp.f_value(v) > ShortestPaths::kUnreachableCost);
-    });
+    // Half a cell of tolerance: enough for the near side of a round obstacle
+    // to win over its far side, too little to step back from the wall.
+    v1 = nearest_reachable_cell(grid_, sp, Point2f(p1.x(), p1.y()),
+                                0.5f * grid_.cell_size());
     plan_timings_.scan_reachable = t_scan.seconds_elapsed();
     if (v1 != INVALID_CELL_ID) {
       RCLCPP_INFO(nh_->get_logger(),
@@ -943,7 +954,8 @@ VertexId Planner::select_astar_goal_vertex(const ShortestPaths &sp, VertexId v0,
                   format(to_vec3(grid_.point(v1))).c_str());
     }
   } else {
-    // Goal unexplored, hence unreachable: head for the cheapest frontier.
+    // Goal not reached, but maybe reachable through unexplored space or
+    // beyond the range crop: head for the cheapest frontier.
     Timer t_frontier;
     v1 = get_cheapest_frontier(sp, v0, p0, p1, frontier_min_dist_,
                                frontier_max_neighbors_);

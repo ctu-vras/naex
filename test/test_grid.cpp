@@ -1675,6 +1675,172 @@ TEST(AStar, ReusesItsBuffersAcrossRuns) {
   EXPECT_NEAR(sp.path_cost(goal), first, 1e-4f);
 }
 
+TEST(AStar, VisitedExcludesDiscoveredObstacles) {
+  // Boost discovers the wall cells next to expanded ones without ever
+  // relaxing the INF edge into them; they must not count as reached.
+  Grid grid = make_dense_grid(20);
+  for (int16_t y = 0; y < 20; ++y) {
+    grid.cell_costs(Cell(10, y))[0] = 5.f;
+  }
+  const Costs max_costs(1.f);
+  const VertexId start = grid.cell_id(Cell(0, 0));
+  ShortestPaths sp;
+  EXPECT_FALSE(sp.compute_astar(rclcpp::get_logger("test_grid"), grid, start,
+                                naex::Vec3(19.f, 0.f, 0.f), true, 1000.f, 8,
+                                max_costs));
+  EXPECT_EQ(sp.visited()[grid.cell_id(Cell(9, 0))], 1);
+  EXPECT_EQ(sp.visited()[grid.cell_id(Cell(10, 0))], 0) << "wall cell";
+  EXPECT_EQ(sp.visited()[grid.cell_id(Cell(11, 0))], 0) << "behind the wall";
+}
+
+// --- goal_enclosure / nearest_reachable_cell -------------------------------
+
+namespace {
+
+using naex::grid::GoalEnclosure;
+
+constexpr int16_t kRingCx = 12;
+constexpr int16_t kRingCy = 15;
+
+/**
+ * 30x30 unit cells, free, with a blocked square ring of Chebyshev radius 2
+ * around (kRingCx, kRingCy).  Cells for which @p unobserved returns true are
+ * not created at all.
+ */
+template <typename Unobserved>
+Grid make_ring_grid(Unobserved unobserved, bool diamond = false) {
+  Grid grid(1.f, 1.f, Costs(0.f, 0.f, 0.f, 0.f));
+  for (int16_t x = 0; x < 30; ++x) {
+    for (int16_t y = 0; y < 30; ++y) {
+      const int dx = std::abs(x - kRingCx);
+      const int dy = std::abs(y - kRingCy);
+      if (unobserved(dx, dy)) {
+        continue;
+      }
+      const bool wall = diamond ? dx + dy == 2 : std::max(dx, dy) == 2;
+      grid.cell_costs(Cell(x, y))[0] = wall ? 5.f : 0.f;
+    }
+  }
+  return grid;
+}
+
+const auto kAllObserved = [](int, int) { return false; };
+const auto kInsideUnobserved = [](int dx, int dy) {
+  return std::max(dx, dy) < 2;
+};
+
+GoalEnclosure run_enclosure(const Grid &grid, Cell start_cell,
+                            uint8_t neighborhood = 8, float range = 1000.f,
+                            size_t max_cells = 20000) {
+  const Costs max_costs(1.f);
+  const VertexId start = grid.find_cell(start_cell);
+  const Point2f goal = grid.cell_to_point(Cell(kRingCx, kRingCy));
+  ShortestPaths sp;
+  EXPECT_FALSE(sp.compute_astar(rclcpp::get_logger("test_grid"), grid, start,
+                                naex::Vec3(goal.x, goal.y, 0.f),
+                                grid.find_cell(Cell(kRingCx, kRingCy)) !=
+                                    naex::grid::INVALID_CELL_ID,
+                                range, neighborhood, max_costs));
+  return naex::grid::goal_enclosure(grid, sp, start, goal, range, max_costs,
+                                    neighborhood, max_cells);
+}
+
+} // namespace
+
+TEST(GoalEnclosure, RingWithObservedInsideIsEnclosed) {
+  const Grid grid = make_ring_grid(kAllObserved);
+  EXPECT_EQ(run_enclosure(grid, Cell(2, 15)), GoalEnclosure::kEnclosed);
+}
+
+TEST(GoalEnclosure, RingWithUnobservedInsideIsEnclosed) {
+  // The goal cell does not even exist; the wall still closes the pocket.
+  const Grid grid = make_ring_grid(kInsideUnobserved);
+  ASSERT_EQ(grid.find_cell(Cell(kRingCx, kRingCy)),
+            naex::grid::INVALID_CELL_ID);
+  EXPECT_EQ(run_enclosure(grid, Cell(2, 15)), GoalEnclosure::kEnclosed);
+}
+
+TEST(GoalEnclosure, UnobservedGapInTheWallIsOpen) {
+  // One wall cell never observed: a route may exist through it.
+  const Grid grid = make_ring_grid([](int dx, int dy) {
+    return std::max(dx, dy) < 2 || (dx == 2 && dy == 0);
+  });
+  EXPECT_EQ(run_enclosure(grid, Cell(2, 15)), GoalEnclosure::kOpen);
+}
+
+TEST(GoalEnclosure, DiagonalWallFollowsTheNeighborhood) {
+  // A diamond-shaped wall is closed for 4-connected moves but not for
+  // 8-connected ones, exactly as for the search itself.
+  const auto diamond_inside = [](int dx, int dy) { return dx + dy < 2; };
+  const Grid grid = make_ring_grid(diamond_inside, /*diamond=*/true);
+  EXPECT_EQ(run_enclosure(grid, Cell(2, 15), 4), GoalEnclosure::kEnclosed);
+  EXPECT_EQ(run_enclosure(grid, Cell(2, 15), 8), GoalEnclosure::kOpen);
+}
+
+TEST(GoalEnclosure, CropOrBudgetMakeItUndetermined) {
+  // Goal outside the crop: nothing is known about the far side.
+  const Grid ring = make_ring_grid(kAllObserved);
+  EXPECT_EQ(run_enclosure(ring, Cell(2, 15), 8, /*range=*/5.f),
+            GoalEnclosure::kUndetermined);
+  // An enclosed pocket larger than the budget is not judged enclosed.
+  EXPECT_EQ(run_enclosure(ring, Cell(2, 15), 8, 1000.f, /*max_cells=*/4),
+            GoalEnclosure::kUndetermined);
+
+  // A full-height wall at x = 20 with the goal behind it: the pocket spills
+  // into the unexplored space past the map edge.  Within a 50 m crop the fill
+  // goes around the end of the wall to the reached side (open); within a
+  // 25 m crop it meets the crop boundary, 3 cells past the goal, long before
+  // the end of the wall (undetermined).
+  Grid wall = make_dense_grid(30);
+  for (int16_t y = 0; y < 30; ++y) {
+    wall.cell_costs(Cell(20, y))[0] = 5.f;
+  }
+  const auto behind_wall = [&wall](float range) {
+    const Costs max_costs(1.f);
+    const VertexId start = wall.cell_id(Cell(2, 15));
+    const Point2f goal = wall.cell_to_point(Cell(25, 15));
+    ShortestPaths sp;
+    sp.compute_astar(rclcpp::get_logger("test_grid"), wall, start,
+                     naex::Vec3(goal.x, goal.y, 0.f), true, range, 8,
+                     max_costs);
+    return naex::grid::goal_enclosure(wall, sp, start, goal, range, max_costs,
+                                      8, 20000);
+  };
+  EXPECT_EQ(behind_wall(50.f), GoalEnclosure::kOpen);
+  EXPECT_EQ(behind_wall(25.f), GoalEnclosure::kUndetermined);
+}
+
+TEST(NearestReachableCell, PrefersTheNearSideOfARoundWall) {
+  // The robot is on the +x side; the four cells outside the wall straight
+  // across from the goal are all 3 m from it.  The plain nearest_cell() picks
+  // the lowest CellId, which is the far (-x) one.
+  const Grid grid = make_ring_grid(kAllObserved);
+  const VertexId start = grid.find_cell(Cell(27, 15));
+  const Point2f goal = grid.cell_to_point(Cell(kRingCx, kRingCy));
+  ShortestPaths sp;
+  sp.compute_astar(rclcpp::get_logger("test_grid"), grid, start,
+                   naex::Vec3(goal.x, goal.y, 0.f), true, 1000.f, 8,
+                   Costs(1.f));
+  const auto reachable = [&sp](naex::grid::CellId v) {
+    return sp.path_cost(v) < ShortestPaths::kUnreachableCost;
+  };
+  const naex::grid::CellId plain =
+      naex::grid::nearest_cell(grid, goal, reachable);
+  ASSERT_NE(plain, naex::grid::INVALID_CELL_ID);
+  EXPECT_EQ(grid.cell(plain).x, kRingCx - 3);
+
+  const naex::grid::CellId v1 =
+      naex::grid::nearest_reachable_cell(grid, sp, goal, 0.5f);
+  ASSERT_NE(v1, naex::grid::INVALID_CELL_ID);
+  EXPECT_EQ(grid.cell(v1).x, kRingCx + 3);
+  EXPECT_EQ(grid.cell(v1).y, kRingCy);
+  // A full cell of tolerance would step back to (kRingCx + 4, kRingCy).
+  EXPECT_EQ(grid.cell(naex::grid::nearest_reachable_cell(grid, sp, goal, 1.f)).x,
+            kRingCx + 4);
+  // Without tolerance it is the plain nearest cell.
+  EXPECT_EQ(naex::grid::nearest_reachable_cell(grid, sp, goal, 0.f), plain);
+}
+
 // --- trace_path_vertices (shared by grid_planner and mule_planner) --------
 
 TEST(TracePathVertices, WalksBackFromV1ToV0) {

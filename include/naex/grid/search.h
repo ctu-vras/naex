@@ -14,6 +14,7 @@
 #include <limits>
 #include <queue>
 #include <rclcpp/rclcpp.hpp>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -182,10 +183,10 @@ private:
  * A* visitor that stops the search on the goal cell, and also as soon as the
  * first untraversable cell is popped.
  *
- * The second condition is what makes "visited" mean "reachable": because the
- * queue is ordered by f and every traversable cell has a finite f, popping an
- * out-of-bounds cell means every traversable cell in range has already been
- * expanded.
+ * The second condition is what makes the search complete: because the queue is
+ * ordered by f and every reachable cell has a finite f, popping an
+ * out-of-bounds cell means every reachable cell in range has already been
+ * expanded.  goal_enclosure() relies on that.
  */
 struct AstarGoalVisitor : public boost::default_astar_visitor {
   AstarGoalVisitor(VertexId goal, bool stop_on_goal, const Grid &grid,
@@ -298,7 +299,11 @@ public:
   const std::vector<Cost> &path_costs() const { return path_costs_; }
   /// A* f = g + h per cell; all zeros after a Dijkstra run.
   const std::vector<Cost> &f_values() const { return f_values_; }
-  /// 1 for every cell the search expanded, i.e. every reachable cell.
+  /**
+   * 1 for every cell the search reached at a finite cost, i.e. every
+   * reachable cell (within the range crop for A*).  Never 1 for an
+   * out-of-bounds cell, even one A* discovered next to a reachable cell.
+   */
   const std::vector<std::uint8_t> &visited() const { return visited_; }
 
   const VertexId &predecessor(VertexId v) const { return predecessor_[v]; }
@@ -425,8 +430,14 @@ protected:
       found_goal_ = false;
     }
 
+    // Discovered is not enough: boost also discovers (greys) every
+    // out-of-bounds neighbour of an expanded cell, without relaxing the INF
+    // edge into it, so such a cell is grey but keeps path cost FLT_MAX.
     for (size_t v = 0; v < n; ++v) {
-      visited_[v] = (colors_[v] != boost::white_color) ? 1 : 0;
+      visited_[v] = (colors_[v] != boost::white_color &&
+                     path_costs_[v] < kUnreachableCost)
+                        ? 1
+                        : 0;
     }
     RCLCPP_INFO(log, "Filtered out %lu out of range (> %f m) points.",
                 static_cast<unsigned long>(num_vertices_out_of_range),
@@ -441,6 +452,138 @@ protected:
   bool astar_{false};
   bool found_goal_{false};
 };
+
+/// Outcome of goal_enclosure().
+enum class GoalEnclosure {
+  /// Free or unexplored cells connect the goal to a cell the search reached.
+  kOpen,
+  /**
+   * Only out-of-bounds cells surround the goal's pocket of free and
+   * unexplored cells: no route to it exists, whatever is left to explore.
+   */
+  kEnclosed,
+  /// The fill left the range crop or exceeded its cell budget.
+  kUndetermined,
+};
+
+/**
+ * Whether the goal sits in a pocket that no route can enter, judged by a flood
+ * fill from the goal cell over every cell that is not out of bounds -- free
+ * cells and unexplored (absent) ones alike.
+ *
+ * Meant for an A* run that did not reach the goal, @p sp being that run.  Such
+ * a run expanded every reachable cell inside the range crop, so:
+ *
+ *  * a fill that touches a cell it reached shows a route through unexplored
+ *    space, which exploration may open (kOpen);
+ *  * a fill that leaves the crop may continue around an obstacle the crop
+ *    hides, so nothing is known (kUndetermined); a goal outside the crop is
+ *    kUndetermined straight away;
+ *  * a fill that runs out of cells is walled in by out-of-bounds cells
+ *    (kEnclosed).  This holds whether the inside of the wall was ever
+ *    observed or not.
+ *
+ * The fill uses the search's own @p neighborhood, so it squeezes through a
+ * diagonal gap exactly when the search could.  It visits at most
+ * @p max_cells cells (kUndetermined beyond that), each by a hash lookup;
+ * unexplored cells have no CellId, hence the coordinate-based walk.
+ */
+inline GoalEnclosure goal_enclosure(const Grid &grid, const ShortestPaths &sp,
+                                    VertexId start, const Point2f &goal,
+                                    float max_range, const Costs &max_costs,
+                                    uint8_t neighborhood, size_t max_cells) {
+  if (!in_cell_range(grid, goal) || start == INVALID_VERTEX_ID) {
+    return GoalEnclosure::kUndetermined;
+  }
+  const Point2f origin = grid.point(start);
+  const auto in_crop = [&](const Cell &c) {
+    const Point2f p = grid.cell_to_point(c);
+    const float dx = p.x - origin.x;
+    const float dy = p.y - origin.y;
+    return !(std::sqrt(dx * dx + dy * dy) > max_range);
+  };
+  const auto reached = [&](CellId v) {
+    return sp.path_cost(v) < ShortestPaths::kUnreachableCost;
+  };
+
+  const Cell goal_cell = grid.point_to_cell(goal);
+  if (!in_crop(goal_cell)) {
+    return GoalEnclosure::kUndetermined;
+  }
+  const CellId goal_id = grid.find_cell(goal_cell);
+  if (goal_id != INVALID_CELL_ID && reached(goal_id)) {
+    return GoalEnclosure::kOpen;
+  }
+
+  const int count = (neighborhood == 4) ? 4 : 8;
+  const int step = (neighborhood == 4) ? 2 : 1;
+  // Breadth-first, so that the nearest of a reached cell and the crop
+  // boundary decides, and a goal just past the map edge ends the fill within
+  // a few cells.
+  std::unordered_set<Cell, CellHasher> seen{goal_cell};
+  std::vector<Cell> queue{goal_cell};
+  for (size_t head = 0; head < queue.size(); ++head) {
+    const Cell c = queue[head];
+    for (int k = 0; k < count; ++k) {
+      const Cell n = neighbor8(c, k * step);
+      if (!seen.insert(n).second) {
+        continue;
+      }
+      const CellId v = grid.find_cell(n);
+      if (v != INVALID_CELL_ID) {
+        if (!costs_in_bounds(grid.costs(v), max_costs)) {
+          continue; // Wall.
+        }
+        if (reached(v)) {
+          return GoalEnclosure::kOpen;
+        }
+      }
+      if (!in_crop(n) || seen.size() > max_cells) {
+        return GoalEnclosure::kUndetermined;
+      }
+      queue.push_back(n);
+    }
+  }
+  return GoalEnclosure::kEnclosed;
+}
+
+/**
+ * Cell to plan to when the goal itself cannot be reached: the reachable cell
+ * nearest to @p p, except that among the reachable cells within
+ * @p tolerance (m) of that nearest distance the cheapest to reach wins.
+ *
+ * The tolerance is what keeps a goal walled in by a round obstacle on the
+ * near side: every cell along the outside of the wall is about equally near
+ * the goal, and a strict argmin would just as well pick one on the far side
+ * and drive around the wall to it.  Keep @p tolerance below one cell: the
+ * cell one step back toward the robot is one cell further from the goal and
+ * always cheaper, so a full cell would stop the plan a cell short.  Ties go to
+ * the lowest CellId, as in nearest_cell().  INVALID_CELL_ID if nothing is
+ * reachable.
+ */
+inline CellId nearest_reachable_cell(const Grid &grid, const ShortestPaths &sp,
+                                     const Point2f &p, float tolerance) {
+  const auto reachable = [&sp](CellId v) {
+    return sp.path_cost(v) < ShortestPaths::kUnreachableCost;
+  };
+  const CellId nearest = nearest_cell(grid, p, reachable);
+  if (nearest == INVALID_CELL_ID || !(tolerance > 0.f)) {
+    return nearest;
+  }
+  const auto dist = [&](CellId v) {
+    const Point2f q = grid.point(v);
+    return std::hypot(q.x - p.x, q.y - p.y);
+  };
+  const float max_dist = dist(nearest) + tolerance;
+  CellId best = nearest;
+  for (CellId v = 0; v < static_cast<CellId>(grid.size()); ++v) {
+    if (reachable(v) && sp.path_cost(v) < sp.path_cost(best) &&
+        !(dist(v) > max_dist)) {
+      best = v;
+    }
+  }
+  return best;
+}
 
 /**
  * Breadth-first search over a Grid, used to group frontier cells into
